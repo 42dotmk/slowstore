@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "slowstore"
+version = "0.1.0"
+description = "Simple filesystem backed key value storage for easy testing"
+authors = ["Costa Halicea <costa@codechem.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pydantic = "^2.8.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
