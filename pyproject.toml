@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "slowstore"
-version = "0.1.2"
-description = "Simple filesystem backed key value storage for easy testing"
+version = "0.1.4"
+description = "File json storage backend for your collections"
 authors = ["Costa Halicea <costa@codechem.com>"]
 
 homepage = "https://github.com/42dotmk/slowstore"

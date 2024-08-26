@@ -1,7 +1,10 @@
+publish: build version_bump tag push
+	poetry --build publish
+
 build:
 	poetry build
 
-version_bump: 
+version_bump:
 	poetry version patch
 
 tag: 
@@ -10,6 +13,4 @@ tag:
 push:
 	git push --tags
 
-publish: build, version_bump, tag
-	poetry publish --build --username __token__ --password ${PYPI_TOKEN}
 

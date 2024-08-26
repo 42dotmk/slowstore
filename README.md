@@ -75,6 +75,7 @@ s1.redo()
 ```
 
 ### Querying
+
 ```python
 # get all items, returns an iterator
 all_items = store.all()
@@ -90,8 +91,30 @@ if s2 in store:
     print("s2 is in store")
 else:
     print("s2 is not in store")
+```
+
+### Deleting items
+Any of the following will delete the item from the store, along with the file that contains the data
+```python
+store.delete(s1)
+
+del store[s2]
+
+key = "some_key"
+store.delete(key)
 
 ```
+
+## Wish list
+
+- [ ] Partial load of the store, to avoid loading all items at once
+      - We should use some form of lazy loading to avoid loading all items at once
+      - Include cache for the items that are already loaded
+
+- [ ] Add support for indexes, so we dont need to look at all items to find the one we want
+
+- [ ] Add support for transactions
+      These should be human readable, so we can inspect the data in the store
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
