@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "slowstore"
-version = "0.1.1"
+version = "0.1.2"
 description = "Simple filesystem backed key value storage for easy testing"
 authors = ["Costa Halicea <costa@codechem.com>"]
 
