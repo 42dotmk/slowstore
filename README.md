@@ -86,6 +86,7 @@ store.commit_all()
 ### Undo/Redo
 
 Every slowstore item is a proxy object around the object you added to the store. This allows you to access the object's attributes and adds undo/redo/dirty functionality
+
 ```python
 s1.undo()
 s1.redo()
@@ -102,8 +103,10 @@ filtered_items = store.filter(lambda x: x.age > 30)
 
 # get the first item that matches a condition
 first_item = store.first(lambda x: x.age > 30)
+```
 
 # Check if some object or it's key is in the store
+```python
 if s2 in store:
     print("s2 is in store")
 else:
@@ -115,13 +118,11 @@ Any of the following will delete the item from the store, along with the file th
 
 ```python
 store.delete(s1)
-
 del store[s2]
-
 key = "some_key"
 store.delete(key)
-
 ```
+
 ## How it works
 
 The slowtore instance behaves like a dictionary of objects you added to it. Instead of storing the object it creates a proxy object that stores the object's state and the changes you made to it. 
