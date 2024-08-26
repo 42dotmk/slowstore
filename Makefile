@@ -11,6 +11,6 @@ tag:
 	git tag -a `poetry version --short` -m "Release `poetry version --short`"
 
 push:
+	git commit -am "Release `poetry version --short`"
 	git push --tags
-
 
