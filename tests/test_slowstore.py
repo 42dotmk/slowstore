@@ -1,5 +1,5 @@
 import os
-from server.slowstore import Slowstore
+from slowstore import Slowstore, ModelProxy
 from pydantic import BaseModel
 import pytest
 from typing import Any, cast
@@ -37,18 +37,19 @@ def test_commit_all(store:Slowstore[SampleModel]):
     store.commit_all()
     
     store = load_store()
-    assert len(store.all().items()) == 10
+    assert len(list(store.all())) == 10
 
 def test_undo(store:Slowstore[SampleModel]):
     key = "test://1"
     model = store.upsert(key, SampleModel(name="test1"))
+    proxy = cast(ModelProxy,model)
     model.name = "another"
     print(model.name)
     assert model.name == "another"
-    model.__reset__(1)
+    proxy.__reset__(1)
     print(model.name)
     assert model.name == "test1"
-    store.commit_all()
+    proxy.commit()
 
     store = load_store()
     model = store.get(key)
@@ -59,23 +60,23 @@ def test_undo(store:Slowstore[SampleModel]):
 def test_query(store:Slowstore[SampleModel]):
     store = load_store()
     populate_store(store)
-    assert len(list(store.query(lambda _, v: v.name == "test1"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test2"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test3"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test4"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test5"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test6"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test7"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test8"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test9"))) == 1
-    assert len(list(store.query(lambda _, v: v.name == "test10"))) == 0
+    assert len(list(store.filter(lambda _, v: v.name == "test1"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test2"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test3"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test4"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test5"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test6"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test7"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test8"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test9"))) == 1
+    assert len(list(store.filter(lambda _, v: v.name == "test10"))) == 0
 
 def test_remove(store:Slowstore[SampleModel]):
     store = load_store()
     populate_store(store)
     model = store.first(lambda *_:True)
     assert model is not None
-    key = model.__key__
+    key = cast(ModelProxy,model).__key__
     store.delete(key)
 
     assert key not in store

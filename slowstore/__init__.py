@@ -141,9 +141,10 @@ class Slowstore(Generic[T]):
     def __init__(self, cls: type, directory: str, **kwargs):
         """Creates a new Slowstore instance"""
         super().__init__()
-        self.__data__ = {}
         self.directory = directory
         self.cls = cls
+        self.__data__ = {}
+        self.__changes__ = []
         # get the model type from the generic
         if kwargs.get("load_on_start", True):
             self.load()
