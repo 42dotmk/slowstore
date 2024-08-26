@@ -14,8 +14,11 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.12"
 pydantic = "^2.8.2"
-pytest = "^8.3.2"
 
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.2"
+debugpy = "^1.8.5"
 
 [build-system]
 requires = ["poetry-core"]
