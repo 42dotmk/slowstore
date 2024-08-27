@@ -1,3 +1,5 @@
+TEST_ARGS = "-v"
+
 publish: build version_bump tag push
 	poetry --build publish
 
@@ -14,5 +16,8 @@ push:
 	git commit -am "Release `poetry version --short`"
 	git push
 	git push --tags
+
+test:
+	poetry run pytest $(TEST_ARGS)
 
 

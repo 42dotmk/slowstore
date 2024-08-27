@@ -20,9 +20,8 @@ def json_default(o):
         return o.isoformat()
 
 
-class Change(BaseModel):
+class Change(BaseModel, Generic[T]):
     """A property change that can be undone or redone on a model"""
-
     key: str
     prop_name: str
     prev_val: Any
@@ -30,18 +29,18 @@ class Change(BaseModel):
     date: datetime.datetime = datetime.datetime.now()
 
     # Not supporting this yet, since i dont need it
-    transaction_id: str = ""
+    transaction: str = ""
 
     def __init__(self, key, prop_name, prev_val, new_val):
         super().__init__(
             key=key, prop_name=prop_name, prev_val=prev_val, new_val=new_val
         )
 
-    def undo(self, model):
-        setattr(model, self.prop_name, self.prev_val)
+    def undo(self, model: T):
+        model.__setattr__(self.prop_name, self.prev_val)
 
-    def redo(self, model):
-        setattr(model, self.prop_name, self.new_val)
+    def redo(self, model:T):
+        model.__setattr__(self.prop_name, self.new_val)
 
 
 __special_fields__ = [
@@ -56,19 +55,18 @@ __special_fields__ = [
 ]
 
 
-class ModelProxy(BaseModel, Generic[T]):
+class ModelProxy(Generic[T]):
     store: "Slowstore[T]"
     model: T
-    is_dirty: bool = False
-    __changes__: List[Change] = []
     __key__: str
 
+    is_dirty: bool = False
+    __changes__: List[Change] = []
+
     def __init__(self, store: "Slowstore[T]", key: str, model: T):
-        self.model = model
         self.store = store
-        self.is_dirty = False
+        self.model = model
         self.__key__ = key
-        self.__changes__ = []
 
     def __getattr__(self, name):
         if name in __special_fields__:
@@ -77,11 +75,7 @@ class ModelProxy(BaseModel, Generic[T]):
             return getattr(self.model, name)
 
     def __setattr__(self, name, value):
-        if name == "model":
-            super().__setattr__(name, value)
-            self.is_dirty = False
-            self.__changes__ = []
-        elif name in __special_fields__:
+        if name in __special_fields__:
             super().__setattr__(name, value)
         else:
             prev = self.model.__getattribute__(name)
@@ -89,8 +83,9 @@ class ModelProxy(BaseModel, Generic[T]):
                 return
             setattr(self.model, name, value)
             self.__add_change__(name, prev, value)
-            self.__changes__.insert(0, Change(self.__key__, name, prev, value))
+
             self.is_dirty = True
+
             if self.store.save_on_change:
                 self.commit()
 
@@ -108,7 +103,9 @@ class ModelProxy(BaseModel, Generic[T]):
             change = self.__changes__.pop(0)
             count -= 1
             size -= 1
-            change.undo(self.model)
+            change.undo(self)
+        if count > 0 and self.store.save_on_change:
+            self.commit()
 
 
 class Slowstore(Generic[T]):
@@ -148,7 +145,7 @@ class Slowstore(Generic[T]):
         # get the model type from the generic
         if kwargs.get("load_on_start", True):
             self.load()
-        self.save_on_change = kwargs.get("save_on_change", False)
+        self.save_on_change = kwargs.get("save_on_change", True)
         self.save_on_exit = kwargs.get("save_on_exit", True)
 
     def get(self, key) -> T:
@@ -277,7 +274,6 @@ class Slowstore(Generic[T]):
                 d["__key__"] = item.__key__
                 f.write(json.dumps(d, indent=2, default=json_default))
             item.is_dirty = False
-            item.__changes__ = []
 
     def __ensure_loaded__(self):
         if not self.loaded:

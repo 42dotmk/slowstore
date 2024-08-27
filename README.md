@@ -51,11 +51,13 @@ class SampleModel(BaseModel):
     age: int = 0
 
 # Create a new store and load the data 
+
 **One feature that I use a lot is to commit on property change, so I can inspect exactly what is going on**
 ```python
 store = Slowstore[SampleModel](SampleModel, "mydata", save_on_change=True)).load()
 ```
 You can also enable/disable the flag at any time after the store is created
+
 ```python
 store.save_on_change = True
 ```
@@ -92,7 +94,7 @@ s1.undo()
 s1.redo()
 ```
 
-### Querying
+### Querying the store
 
 ```python
 # get all items, returns an iterator
@@ -106,6 +108,7 @@ first_item = store.first(lambda x: x.age > 30)
 ```
 
 # Check if some object or it's key is in the store
+
 ```python
 if s2 in store:
     print("s2 is in store")

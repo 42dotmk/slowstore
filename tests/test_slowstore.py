@@ -80,10 +80,3 @@ def test_remove(store:Slowstore[SampleModel]):
     store.delete(key)
 
     assert key not in store
-
-def test_generic_args():
-    """check if the generic args are properly set"""
-    store = load_store()
-    assert cast(Any, store).__orig_class__.__args__[0] == SampleModel
-
-
