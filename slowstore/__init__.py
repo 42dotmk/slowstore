@@ -167,12 +167,13 @@ class Slowstore(Generic[T]):
         self.__data__ = {}
         self.__changes__ = []
         # get the model type from the generic
-        if kwargs.get("load_on_start", True):
-            self.load()
         self.save_on_change = kwargs.get("save_on_change", self.save_on_change)
         self.save_on_exit = kwargs.get("save_on_exit", self.save_on_exit)
         self.load_changes_from_file = kwargs.get("load_changes_from_file", self.load_changes_from_file)
         self.save_changes_to_file = kwargs.get("save_changes_to_file", self.save_changes_to_file)
+
+        if kwargs.get("load_on_start", True):
+            self.load()
 
     def get(self, key) -> T:
         """gets an object from the story"""
