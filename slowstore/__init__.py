@@ -116,8 +116,8 @@ class ModelProxy(Generic[T]):
         change = Change(
             key=self.__key__, prop_name=prop_name, prev_val=prev_val, new_val=new_val
         )
-        self.store.__changes__.append(change)
-        self.__changes__.append(change)
+        self.store.__changes__.insert(0, change)
+        self.__changes__.insert(0, change)
 
     def __reset__(self, count: int = sys.maxsize):
         size = len(self.__changes__)
