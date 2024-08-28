@@ -50,16 +50,29 @@ class SampleModel(BaseModel):
     name: str
     age: int = 0
 
-# Create a new store and load the data 
+    def birthday(self):
+        self.age += 1
 
-**One feature that I use a lot is to commit on property change, so I can inspect exactly what is going on**
-```python
 store = Slowstore[SampleModel](SampleModel, "mydata", save_on_change=True)).load()
+
+dennis = store.upsert("dennis", SampleModel(name="denis", age=32))
+# immediately after previous like is evaluated,
+# you will have a json file (dennis.json) represening this object under the 'my data' directory
+
+dennis.name = "DENIS"
+# here the name in the json will also change from "dennis" to "DENIS"
+# also the associated change will be tracked so you can further inspect if needed.
+
+denis.birthday()
+# will also trigger another change in the age field and it will be reflected in the json file. 
+
 ```
-You can also enable/disable the flag at any time after the store is created
+
+
+You can  enable/disable the save_on_change flat at any time after the store is created
 
 ```python
-store.save_on_change = True
+store.save_on_change = False
 ```
 
 After this code is executed, every time a property is changed, 
@@ -67,17 +80,8 @@ the changes will be saved to disk immediately.
 
 This is **slow**, but it is useful for debugging and testing.
 
-### Adding items to the store
-
-```python
-s1 = store.upsert(SampleModel(name="Alice", age=30))
-s2 = store.upsert(SampleModel(name="Bob", age=25))
-s3 = store.upsert(SampleModel(name="Charlie", age=35))
-s1.age = 32
-```
-
 ### Commit the changes to the store
-If the store is not set to save on change, you can commit the changes manually.
+If the store's `save_on_change` flag is not set to `True`, you can commit the changes manually.
 ```python
 store.commit(s1)
 store.commit(s2)
