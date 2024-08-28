@@ -8,20 +8,16 @@ from pydantic import BaseModel
 
 from typing import Any, Callable, Generic, List, Literal, TypeVar, cast
 
-T = TypeVar("T", bound=BaseModel)
+T = TypeVar("T")
 
 from logging import getLogger as get_logger
 
 logger = get_logger(__name__)
 
 
-def json_default(o):
-    if isinstance(o, (datetime.date, datetime.datetime)):
-        return o.isoformat()
-
-
-class Change(BaseModel, Generic[T]):
+class Change(Generic[T]):
     """A property change that can be undone or redone on a model"""
+
     key: str
     prop_name: str
     prev_val: Any
@@ -31,15 +27,22 @@ class Change(BaseModel, Generic[T]):
     # Not supporting this yet, since i dont need it
     transaction: str = ""
 
-    def __init__(self, key, prop_name, prev_val, new_val):
-        super().__init__(
-            key=key, prop_name=prop_name, prev_val=prev_val, new_val=new_val
-        )
+    def __init__(self, **kwargs):
+        if "key" not in kwargs:
+            raise ValueError("key is required")
+        if "prop_name" not in kwargs:
+            raise ValueError("prop_name is required")
+        if "prev_val" not in kwargs:
+            raise ValueError("prev_val is required")
+        if "new_val" not in kwargs:
+            raise ValueError("new_val is required")
+
+        self.__dict__.update(kwargs)
 
     def undo(self, model: T):
         model.__setattr__(self.prop_name, self.prev_val)
 
-    def redo(self, model:T):
+    def redo(self, model: T):
         model.__setattr__(self.prop_name, self.new_val)
 
 
@@ -74,15 +77,17 @@ class ModelProxy(Generic[T]):
             return super().__getattribute__(name)
         else:
             logger.debug(f"Getting model.{name}")
-            attr =  getattr(self.model, name)
+            attr = getattr(self.model, name)
             if not callable(attr):
                 return attr
             else:
                 # when we have instance methods we need to send the proxy as 'self' so we can track changes
                 func_name = attr.__name__
                 func = attr.__func__
+
                 def wrapper(*args, **kwargs):
                     return func(self, *args, **kwargs)
+
                 wrapper.__name__ = func_name
                 return wrapper
 
@@ -107,7 +112,9 @@ class ModelProxy(Generic[T]):
         self.store.commit(self)
 
     def __add_change__(self, prop_name: str, prev_val: Any, new_val: Any):
-        change = Change(self.__key__, prop_name, prev_val, new_val)
+        change = Change(
+            key=self.__key__, prop_name=prop_name, prev_val=prev_val, new_val=new_val
+        )
         self.store.__changes__.append(change)
         self.__changes__.append(change)
 
@@ -145,6 +152,8 @@ class Slowstore(Generic[T]):
     cls: type
     save_on_change: bool = True
     save_on_exit: bool = True
+    load_changes_from_file: bool = True
+    save_changes_to_file: bool = True
     loaded: bool = False
     __data__: dict[str, ModelProxy[T]]
     __changes__: List[Change]
@@ -161,6 +170,8 @@ class Slowstore(Generic[T]):
             self.load()
         self.save_on_change = kwargs.get("save_on_change", self.save_on_change)
         self.save_on_exit = kwargs.get("save_on_exit", self.save_on_exit)
+        self.load_changes_from_file = kwargs.get("load_changes_from_file", self.load_changes_from_file)
+        self.save_changes_to_file = kwargs.get("save_changes_to_file", self.save_changes_to_file)
 
     def get(self, key) -> T:
         """gets an object from the story"""
@@ -257,8 +268,16 @@ class Slowstore(Generic[T]):
                 try:
                     d = json.load(f)
                     key: str = d["__key__"]
-                    del d["__key__"]
+                    change_dicts = d.get("__changes__", [])
                     proxy = ModelProxy[T](store=self, key=key, model=self.cls(**d))
+
+                    if self.load_changes_from_file:
+                        proxy.__changes__ = [Change(**x) for x in change_dicts]
+
+                    del d["__key__"]
+                    if '__changes__' in d:
+                        del d["__changes__"]
+
                     self.__data__[key] = proxy
                 except Exception as e:
                     logger.error(f"Error loading {filename}: {e}")
@@ -266,10 +285,11 @@ class Slowstore(Generic[T]):
         return self
 
     def clear(self):
-        shutil.rmtree(self.directory)
+        if os.path.exists(self.directory):
+            shutil.rmtree(self.directory, ignore_errors=True)
         self.__data__ = {}
+        self.__changes__ = []
         self.loaded = False
-        self.__ensure_loaded__()
 
     def commit_all(self):
         self.__ensure_loaded__()
@@ -277,6 +297,7 @@ class Slowstore(Generic[T]):
             self.commit(proxy)
 
     def commit(self, item: ModelProxy[T]):
+        self.__ensure_loaded__()
         if item.store != self:
             raise ValueError("Item does not belong to this store")
         if item.is_dirty:
@@ -284,8 +305,12 @@ class Slowstore(Generic[T]):
                 f"{self.directory}/{self.__sanitize_file_name__(item.__key__)}.json",
                 "w",
             ) as f:
-                d = item.model.model_dump()
+                d = item.model.__dict__
+                if isinstance(item.model, BaseModel):
+                    d = cast(BaseModel, item.model).model_dump()
                 d["__key__"] = item.__key__
+                if self.save_changes_to_file:
+                    d["__changes__"] = [x.__dict__ for x in item.__changes__]
                 f.write(json.dumps(d, indent=2, default=json_default))
             item.is_dirty = False
 
@@ -321,3 +346,8 @@ class Slowstore(Generic[T]):
             self.__data__ = {}
             self.loaded = False
         return False
+
+
+def json_default(o):
+    if isinstance(o, (datetime.date, datetime.datetime)):
+        return o.isoformat()
