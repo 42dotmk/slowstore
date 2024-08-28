@@ -53,17 +53,20 @@ class SampleModel(BaseModel):
     def birthday(self):
         self.age += 1
 
-store = Slowstore[SampleModel](SampleModel, "mydata", save_on_change=True)).load()
+store = Slowstore[SampleModel](SampleModel, "mydata", save_on_change=True))
 
+
+# This is how you add or update an object in the store
 dennis = store.upsert("dennis", SampleModel(name="denis", age=32))
-# immediately after previous like is evaluated,
-# you will have a json file (dennis.json) represening this object under the 'my data' directory
+
+# immediately after previous line is evaluated,
+# you will have a json file (mydata/dennis.json) represening this object
 
 dennis.name = "DENIS"
 # here the name in the json will also change from "dennis" to "DENIS"
 # also the associated change will be tracked so you can further inspect if needed.
 
-denis.birthday()
+dennis.birthday()
 # will also trigger another change in the age field and it will be reflected in the json file. 
 
 ```
