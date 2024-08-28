@@ -45,6 +45,7 @@ You can create a new Slowstore instance by calling the constructor:
 
 ```python
 from slowstore import Slowstore
+from pydantic import BaseModel
 
 class SampleModel(BaseModel):
     name: str
