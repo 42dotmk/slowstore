@@ -14,32 +14,6 @@ You can install Slowstore using pip:
 pip install slowstore
 ```
 
-## How is the data organized?
-
-The data is stored in a directory, with each item stored in a separate file. The file name is the key of the item, and the content is the JSON representation of the object.
-
-That's all there is to it.
-
-## Features
-
-At the moment Slowstore works with Pydantic models, but I plan to add support for other types of objects that are serializable to JSON.
-
-- [X] **Save on change**: Set the store to save the data every time a property is changed
-- [X] **Undo/Redo**: Undo and redo changes to the object
-- [X] **Dirty**: Check if the object has been changed
-- [X] **Filtering**: Filter/Query the items in the store
-- [X] **Deleting**: Delete items from the store
-- [X] **Commit**: Commit changes to the store
-- [ ] **Partial load**: Load only the items you need, and lazy load the rest
-- [ ] **Transactions**: Add support for transactions
-- [ ] **Non-Pydantic objects**: Add support for other types of objects
-- [ ] **Indexes**: Add indexes to the store to speed up queries
-
-## Motivation
-
-I created Slowstore because I wanted a simple way to store my objects on disk, without having to worry about databases, connection strings, or any of that. 
-I want to be able to inspect the data, see what is going on with my program undo changes if needed, and filter the data easily.
-
 ## Usage
 You can create a new Slowstore instance by calling the constructor:
 
@@ -54,8 +28,8 @@ class SampleModel(BaseModel):
     def birthday(self):
         self.age += 1
 
-store = Slowstore[SampleModel](SampleModel, "mydata", save_on_change=True))
-
+# Create the store to save data under "mydata" directory
+store = Slowstore[SampleModel](SampleModel, "mydata")
 
 # This is how you add or update an object in the store
 dennis = store.upsert("dennis", SampleModel(name="denis", age=32))
@@ -71,18 +45,39 @@ dennis.birthday()
 # will also trigger another change in the age field and it will be reflected in the json file. 
 
 ```
-
-
-You can  enable/disable the save_on_change flat at any time after the store is created
+`mydata/dennis.json` after running this program will look like:
+```json
+{
+  "name": "DENIS",
+  "age": 33,
+  "__key__": "dennis",
+  "__changes__": [
+    {
+      "key": "dennis",
+      "prop_name": "age",
+      "prev_val": 32,
+      "new_val": 33,
+      "date": "2024-08-28T19:04:12.840353"
+    },
+    {
+      "key": "dennis",
+      "prop_name": "name",
+      "prev_val": "denis",
+      "new_val": "DENIS",
+      "date": "2024-08-28T19:04:12.840216"
+    },
+  ]
+}
+```
+`Slowstore` tracks what happened in your small program on every field.
+You can toggle the `save_on_change` flat at any time after the store is created, 
+or you can also set the `save_on_change` flag to your liking in the constructor of the `store`
 
 ```python
-store.save_on_change = False
+store.save_on_change = False 
 ```
 
-After this code is executed, every time a property is changed, 
-the changes will be saved to disk immediately.
-
-This is **slow**, but it is useful for debugging and testing.
+After this code is executed, you will need to run `store.commit(some_model)` or store.commit_all() in order to persist the changes. 
 
 ### Commit the changes to the store
 If the store's `save_on_change` flag is not set to `True`, you can commit the changes manually.
@@ -115,7 +110,7 @@ filtered_items = store.filter(lambda x: x.age > 30)
 first_item = store.first(lambda x: x.age > 30)
 ```
 
-# Check if some object or it's key is in the store
+### Check if some object or it's key is in the store
 
 ```python
 if s2 in store:
@@ -133,6 +128,27 @@ del store[s2]
 key = "some_key"
 store.delete(key)
 ```
+## How is the data organized?
+
+The data is stored in a directory, with each item stored in a separate file. The file name is the key of the item, and the content is the JSON representation of the object.
+
+That's all there is to it.
+
+## Features
+
+At the moment Slowstore works with Pydantic models, but I plan to add support for other types of objects that are serializable to JSON.
+
+- [X] **Save on change**: Set the store to save the data every time a property is changed
+- [X] **Undo/Redo**: Undo and redo changes to the object
+- [X] **Dirty**: Check if the object has been changed
+- [X] **Filtering**: Filter/Query the items in the store
+- [X] **Deleting**: Delete items from the store
+- [X] **Commit**: Commit changes to the store
+- [ ] **Partial load**: Load only the items you need, and lazy load the rest
+- [ ] **Transactions**: Add support for transactions
+- [ ] **Non-Pydantic objects**: Add support for other types of objects
+- [ ] **Indexes**: Add indexes to the store to speed up queries
+
 
 ## How it works
 
@@ -143,6 +159,10 @@ When you commit the changes, the proxy object is updated with the new state, and
 When you undo/redo the changes, the proxy object is updated with the previous state, and the changes are saved to disk.
 
 Check the ModelProxy class for more details.
+
+## Important
+
+Slow store is **slow** and it is not intended to be used in multithreaded contexts. It's primarily created to provide a good DX while working on a certain feature.
 
 ## License
 
