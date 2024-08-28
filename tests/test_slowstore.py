@@ -11,6 +11,9 @@ class SampleModel(BaseModel):
     name: str
     age: int = 0
 
+    def sample_instance_method(self):
+        self.name = "sample_instance_method"
+
 @pytest.fixture
 def store():
     # setup
@@ -49,7 +52,6 @@ def test_undo(store:Slowstore[SampleModel]):
     proxy.__reset__(1)
     print(model.name)
     assert model.name == "test1"
-    proxy.commit()
 
     store = load_store()
     model = store.get(key)
@@ -57,7 +59,7 @@ def test_undo(store:Slowstore[SampleModel]):
         assert False
     assert model.name == "test1"
 
-def test_query(store:Slowstore[SampleModel]):
+def test_query():
     store = load_store()
     populate_store(store)
     assert len(list(store.filter(lambda _, v: v.name == "test1"))) == 1
@@ -71,7 +73,7 @@ def test_query(store:Slowstore[SampleModel]):
     assert len(list(store.filter(lambda _, v: v.name == "test9"))) == 1
     assert len(list(store.filter(lambda _, v: v.name == "test10"))) == 0
 
-def test_remove(store:Slowstore[SampleModel]):
+def test_remove():
     store = load_store()
     populate_store(store)
     model = store.first(lambda *_:True)
@@ -80,3 +82,12 @@ def test_remove(store:Slowstore[SampleModel]):
     store.delete(key)
 
     assert key not in store
+
+def test_update_from_instance_method(store:Slowstore[SampleModel]):
+    model = store.upsert("test://1", SampleModel(name="test1"))
+    model.name = "from_test"
+    model.sample_instance_method()
+
+    store2 = load_store()
+    model2 = store2.get("test://1")
+    assert model2.name == "sample_instance_method"

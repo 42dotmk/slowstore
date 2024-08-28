@@ -70,14 +70,28 @@ class ModelProxy(Generic[T]):
 
     def __getattr__(self, name):
         if name in __special_fields__:
+            logger.debug(f"Getting proxy.{name}")
             return super().__getattribute__(name)
         else:
-            return getattr(self.model, name)
+            logger.debug(f"Getting model.{name}")
+            attr =  getattr(self.model, name)
+            if not callable(attr):
+                return attr
+            else:
+                # when we have instance methods we need to send the proxy as 'self' so we can track changes
+                func_name = attr.__name__
+                func = attr.__func__
+                def wrapper(*args, **kwargs):
+                    return func(self, *args, **kwargs)
+                wrapper.__name__ = func_name
+                return wrapper
 
     def __setattr__(self, name, value):
         if name in __special_fields__:
+            logger.debug(f"Setting proxy: {name}={value}")
             super().__setattr__(name, value)
         else:
+            logger.debug(f"Setting model: {name}={value}")
             prev = self.model.__getattribute__(name)
             if prev == value:
                 return
@@ -129,8 +143,8 @@ class Slowstore(Generic[T]):
 
     directory: str
     cls: type
-    save_on_change: bool = False
-    save_on_exit: bool = False
+    save_on_change: bool = True
+    save_on_exit: bool = True
     loaded: bool = False
     __data__: dict[str, ModelProxy[T]]
     __changes__: List[Change]
@@ -145,8 +159,8 @@ class Slowstore(Generic[T]):
         # get the model type from the generic
         if kwargs.get("load_on_start", True):
             self.load()
-        self.save_on_change = kwargs.get("save_on_change", True)
-        self.save_on_exit = kwargs.get("save_on_exit", True)
+        self.save_on_change = kwargs.get("save_on_change", self.save_on_change)
+        self.save_on_exit = kwargs.get("save_on_exit", self.save_on_exit)
 
     def get(self, key) -> T:
         """gets an object from the story"""
