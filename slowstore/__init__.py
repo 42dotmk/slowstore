@@ -38,6 +38,7 @@ class Change(Generic[T]):
             raise ValueError("new_val is required")
 
         self.__dict__.update(kwargs)
+        self.date = datetime.datetime.now()
 
     def undo(self, model: T):
         model.__setattr__(self.prop_name, self.prev_val)
@@ -152,7 +153,7 @@ class Slowstore(Generic[T]):
     cls: type
     save_on_change: bool = True
     save_on_exit: bool = True
-    load_changes_from_file: bool = True
+    load_changes_from_file: bool = False
     save_changes_to_file: bool = True
     loaded: bool = False
     __data__: dict[str, ModelProxy[T]]
@@ -269,14 +270,15 @@ class Slowstore(Generic[T]):
                     d = json.load(f)
                     key: str = d["__key__"]
                     change_dicts = d.get("__changes__", [])
-                    proxy = ModelProxy[T](store=self, key=key, model=self.cls(**d))
-
-                    if self.load_changes_from_file:
-                        proxy.__changes__ = [Change(**x) for x in change_dicts]
 
                     del d["__key__"]
                     if '__changes__' in d:
                         del d["__changes__"]
+
+                    proxy = ModelProxy[T](store=self, key=key, model=self.cls(**d))
+
+                    if self.load_changes_from_file:
+                        proxy.__changes__ = [Change(**x) for x in change_dicts]
 
                     self.__data__[key] = proxy
                 except Exception as e:
