@@ -110,3 +110,10 @@ def test_save_changes_on_file(store: Slowstore[SampleModel]):
 
     assert len(proxy.__changes__) == 1
     assert model2.name == "tito"
+
+
+def test_model_dump(store: Slowstore[SampleModel]):
+    store.clear()
+    key = "test"
+    model = store.upsert(key, SampleModel(name="test1"))
+    assert model.model_dump_json() == "{\"name\":\"test1\",\"age\":0}"

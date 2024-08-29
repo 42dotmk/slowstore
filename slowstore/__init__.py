@@ -87,7 +87,7 @@ class ModelProxy(Generic[T]):
                 func = attr.__func__
 
                 def wrapper(*args, **kwargs):
-                    return func(self, *args, **kwargs)
+                    return func(self.model, *args, **kwargs)
 
                 wrapper.__name__ = func_name
                 return wrapper
