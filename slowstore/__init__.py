@@ -158,6 +158,8 @@ class Slowstore(Generic[T]):
     loaded: bool = False
     __data__: dict[str, ModelProxy[T]]
     __changes__: List[Change]
+    encoding: str = "utf-8"
+    ensure_ascii: bool = False
 
     def __init__(self, cls: type, directory: str, **kwargs):
         """Creates a new Slowstore instance"""
@@ -171,6 +173,8 @@ class Slowstore(Generic[T]):
         self.save_on_exit = kwargs.get("save_on_exit", self.save_on_exit)
         self.load_changes_from_file = kwargs.get("load_changes_from_file", self.load_changes_from_file)
         self.save_changes_to_file = kwargs.get("save_changes_to_file", self.save_changes_to_file)
+        self.encoding = kwargs.get("encoding", self.encoding)
+        self.ensure_ascii = kwargs.get("ensure_ascii", self.ensure_ascii)
 
         if kwargs.get("load_on_start", True):
             self.load()
@@ -266,7 +270,7 @@ class Slowstore(Generic[T]):
             os.makedirs(self.directory, exist_ok=True)
 
         for filename in os.listdir(self.directory):
-            with open(f"{self.directory}/{filename}", "r") as f:
+            with open(f"{self.directory}/{filename}", encoding=self.encoding) as f:
                 try:
                     d = json.load(f)
                     key: str = d["__key__"]
@@ -307,6 +311,7 @@ class Slowstore(Generic[T]):
             with open(
                 f"{self.directory}/{self.__sanitize_file_name__(item.__key__)}.json",
                 "w",
+                encoding=self.encoding,
             ) as f:
                 d = item.model.__dict__
                 if isinstance(item.model, BaseModel):
@@ -314,7 +319,7 @@ class Slowstore(Generic[T]):
                 d["__key__"] = item.__key__
                 if self.save_changes_to_file:
                     d["__changes__"] = [x.__dict__ for x in item.__changes__]
-                f.write(json.dumps(d, indent=2, default=json_default))
+                f.write(json.dumps(d, indent=2, default=json_default, ensure_ascii=self.ensure_ascii))
             item.is_dirty = False
 
     def __ensure_loaded__(self):
