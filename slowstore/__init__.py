@@ -13,24 +13,22 @@ T = TypeVar("T")
 
 from logging import getLogger as get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("SLOWSTORE")
+
 
 def ensure_loaded(func):
     @wraps(func)
-    def wrapper(self:"Slowstore", *args, **kwargs):
+    def wrapper(self: "Slowstore", *args, **kwargs):
         if not self.loaded:
             self.load()
         return func(self, *args, **kwargs)
+
     return wrapper
+
 
 class Change(Generic[T]):
     """A property change that can be undone or redone on a model"""
 
-    key: str
-    prop_name: str
-    prev_val: Any
-    new_val: Any
-    date: datetime.datetime = datetime.datetime.now()
 
     # Not supporting this yet, since i dont need it
     transaction: str = ""
@@ -45,8 +43,11 @@ class Change(Generic[T]):
         if "new_val" not in kwargs:
             raise ValueError("new_val is required")
 
-        self.__dict__.update(kwargs)
-        self.date = datetime.datetime.now()
+        self.key: str = kwargs["key"]
+        self.prop_name: str = kwargs["prop_name"]
+        self.prev_val: Any = kwargs["prev_val"]
+        self.new_val: Any = kwargs["new_val"]
+        self.date: datetime.datetime = datetime.datetime.now()
 
     def undo(self, model: T):
         model.__setattr__(self.prop_name, self.prev_val)
@@ -68,17 +69,14 @@ __special_fields__ = [
 
 
 class ModelProxy(Generic[T]):
-    store: "Slowstore[T]"
-    model: T
-    __key__: str
-
-    is_dirty: bool = False
-    __changes__: List[Change] = []
 
     def __init__(self, store: "Slowstore[T]", key: str, model: T):
-        self.store = store
-        self.model = model
-        self.__key__ = key
+        self.store: "Slowstore[T]" = store
+        self.model: T = model
+        self.is_dirty: bool = False
+
+        self.__key__: str = key
+        self.__changes__: List[Change] = []
 
     def __getattr__(self, name):
         if name in __special_fields__:
@@ -121,6 +119,7 @@ class ModelProxy(Generic[T]):
         self.store.commit(self)
 
     def __add_change__(self, prop_name: str, prev_val: Any, new_val: Any):
+        logger.debug(f"Adding change: {prop_name}={prev_val} -> {new_val}")
         change = Change(
             key=self.__key__, prop_name=prop_name, prev_val=prev_val, new_val=new_val
         )
@@ -157,35 +156,24 @@ class Slowstore(Generic[T]):
     :type save_on_exit: bool, Defaults to True
     """
 
-    directory: str
-    cls: type
-    save_on_change: bool = True
-    save_on_exit: bool = True
-    load_changes_from_file: bool = False
-    save_changes_to_file: bool = True
-    key_selector: Callable[["Slowstore[T]", T], str] | None = None
-    loaded: bool = False
-    __data__: dict[str, ModelProxy[T]]
-    __changes__: List[Change]
-
     def __init__(self, cls: type, directory: str, **kwargs):
         """Creates a new Slowstore instance"""
-        super().__init__()
-        self.directory = directory
-        self.cls = cls
-        self.__data__ = {}
-        self.__changes__ = []
-        # get the model type from the generic
-        self.save_on_change = kwargs.get("save_on_change", self.save_on_change)
-        self.save_on_exit = kwargs.get("save_on_exit", self.save_on_exit)
-        self.load_changes_from_file = kwargs.get(
-            "load_changes_from_file", self.load_changes_from_file
-        )
-        self.save_changes_to_file = kwargs.get(
-            "save_changes_to_file", self.save_changes_to_file
-        )
 
-        self.key_selector = kwargs.get("key_selector", None)
+        self.directory: str = directory
+        self.cls: type = cls
+        self.save_on_change: bool = kwargs.get("save_on_change", True)
+        self.save_on_exit: bool = kwargs.get("save_on_exit", True)
+        self.load_changes_from_file: bool = kwargs.get("load_changes_from_file", False)
+        self.save_changes_to_file: bool = kwargs.get("save_changes_to_file", True)
+        self.key_selector: Callable[["Slowstore[T]", T], str] | None = None
+
+        self.encoding: str = kwargs.get("encoding", "utf-8")
+        self.ensure_ascii: bool = kwargs.get("ensure_ascii", False)
+
+        self.key_selector: Callable[["Slowstore[T]", T], str] | None = kwargs.get(
+            "key_selector", None
+        )
+        self.loaded = False
 
         if kwargs.get("load_on_start", True):
             self.load()
@@ -196,7 +184,8 @@ class Slowstore(Generic[T]):
         return cast(T, self.__data__.get(key))
 
     @ensure_loaded
-    def add(self, value: T, skip_autosave: bool = False):
+    def set(self, value: T, skip_autosave: bool = False):
+        """same as upsert but it generates the key using the key_selector function"""
         key = self.key_for(value)
         self.upsert(key, value, skip_autosave)
 
@@ -246,7 +235,6 @@ class Slowstore(Generic[T]):
             return True
         return False
 
-
     @ensure_loaded
     def filter(self, filter: Callable[[str, T], bool]):
         """yield all models that satisfy the filter function"""
@@ -279,12 +267,12 @@ class Slowstore(Generic[T]):
     @ensure_loaded
     def values(self):
         for x in self.__data__:
-            yield self.get(x)
+            yield cast(T, self.get(x))
 
     @ensure_loaded
     def commit_all(self):
-        for proxy in self.__data__.values():
-            self.commit(proxy)
+        for proxy in self.values():
+            self.commit(cast(ModelProxy[T], proxy))
 
     @ensure_loaded
     def commit(self, *items: ModelProxy[T]):
@@ -295,6 +283,7 @@ class Slowstore(Generic[T]):
                 with open(
                     f"{self.directory}/{self.__sanitize_file_name__(item.__key__)}.json",
                     "w",
+                    encoding=self.encoding,
                 ) as f:
                     d = item.model.__dict__
                     if isinstance(item.model, BaseModel):
@@ -302,7 +291,14 @@ class Slowstore(Generic[T]):
                     d["__key__"] = item.__key__
                     if self.save_changes_to_file:
                         d["__changes__"] = [x.__dict__ for x in item.__changes__]
-                    f.write(json.dumps(d, indent=2, default=json_default))
+                    f.write(
+                        json.dumps(
+                            d,
+                            indent=2,
+                            default=json_default,
+                            ensure_ascii=self.ensure_ascii,
+                        )
+                    )
                 item.is_dirty = False
 
     @ensure_loaded
@@ -328,9 +324,11 @@ class Slowstore(Generic[T]):
     def load(self):
         if not os.path.exists(self.directory):
             os.makedirs(self.directory, exist_ok=True)
-
+        self.__data__ = {}
+        self.__changes__ = []
+        self.loaded = False
         for filename in os.listdir(self.directory):
-            with open(f"{self.directory}/{filename}", "r") as f:
+            with open(f"{self.directory}/{filename}", "r", encoding=self.encoding) as f:
                 try:
                     d = json.load(f)
                     key: str = d["__key__"]
@@ -353,7 +351,7 @@ class Slowstore(Generic[T]):
 
     def clear(self):
         if os.path.exists(self.directory):
-            shutil.rmtree(self.directory, ignore_errors=True)
+            shutil.rmtree(self.directory, ignore_errors=False)
         self.__data__ = {}
         self.__changes__ = []
         self.loaded = False
@@ -363,6 +361,14 @@ class Slowstore(Generic[T]):
         value: T,
         key_or_selector: Callable[["Slowstore", T], str] | str | None = None,
     ) -> str:
+        """
+        Tries to create a key for the provided value by using the following order:
+            1. if key_or_selector callable parameter is provided
+            2. if store has key_selector set
+            3. if the value has a __key__ field
+            4. if the value has an id field
+            5. raise ValueError
+        """
         key = None
         if key_or_selector is not None:
             if callable(key_or_selector):
@@ -391,7 +397,6 @@ class Slowstore(Generic[T]):
             .lower()
         )
 
-
     def __enter__(self):
         return self
 
@@ -405,6 +410,7 @@ class Slowstore(Generic[T]):
             self.__data__ = {}
             self.loaded = False
         return False
+
 
 def json_default(o):
     if isinstance(o, (datetime.date, datetime.datetime)):
