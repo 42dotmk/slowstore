@@ -47,7 +47,7 @@ def test_commit_all(store: Slowstore[SampleModel]):
     store.commit_all()
 
     store = load_store()
-    assert len(list(store.all())) == 10
+    assert len(list(store.values())) == 10
 
 
 def test_undo(store: Slowstore[SampleModel]):

@@ -5,8 +5,9 @@ import shutil
 import sys
 import datetime
 from pydantic import BaseModel
+from functools import wraps
 
-from typing import Any, Callable, Generic, List, Literal, TypeVar, cast
+from typing import Any, Callable, Generic, List, Literal, TypeVar, cast, Sequence
 
 T = TypeVar("T")
 
@@ -14,6 +15,13 @@ from logging import getLogger as get_logger
 
 logger = get_logger(__name__)
 
+def ensure_loaded(func):
+    @wraps(func)
+    def wrapper(self:"Slowstore", *args, **kwargs):
+        if not self.loaded:
+            self.load()
+        return func(self, *args, **kwargs)
+    return wrapper
 
 class Change(Generic[T]):
     """A property change that can be undone or redone on a model"""
@@ -155,6 +163,7 @@ class Slowstore(Generic[T]):
     save_on_exit: bool = True
     load_changes_from_file: bool = False
     save_changes_to_file: bool = True
+    key_selector: Callable[["Slowstore[T]", T], str] | None = None
     loaded: bool = False
     __data__: dict[str, ModelProxy[T]]
     __changes__: List[Change]
@@ -169,29 +178,40 @@ class Slowstore(Generic[T]):
         # get the model type from the generic
         self.save_on_change = kwargs.get("save_on_change", self.save_on_change)
         self.save_on_exit = kwargs.get("save_on_exit", self.save_on_exit)
-        self.load_changes_from_file = kwargs.get("load_changes_from_file", self.load_changes_from_file)
-        self.save_changes_to_file = kwargs.get("save_changes_to_file", self.save_changes_to_file)
+        self.load_changes_from_file = kwargs.get(
+            "load_changes_from_file", self.load_changes_from_file
+        )
+        self.save_changes_to_file = kwargs.get(
+            "save_changes_to_file", self.save_changes_to_file
+        )
+
+        self.key_selector = kwargs.get("key_selector", None)
 
         if kwargs.get("load_on_start", True):
             self.load()
 
-    def get(self, key) -> T:
+    @ensure_loaded
+    def get(self, key) -> T | None:
         """gets an object from the story"""
-        self.__ensure_loaded__()
-        return cast(T, self.__data__[key])
+        return cast(T, self.__data__.get(key))
 
-    def upsert(self, key: str, value: T) -> T:
+    @ensure_loaded
+    def add(self, value: T, skip_autosave: bool = False):
+        key = self.key_for(value)
+        self.upsert(key, value, skip_autosave)
+
+    @ensure_loaded
+    def upsert(self, key: str, value: T, skip_autosave=False) -> T:
         """sets a new object in the store and returns it's proxy
         if we overwrite the key it will completely change the underlying model and this can cause data inconsistencies
         """
-        self.__ensure_loaded__()
         if key in self.__data__:
             proxy = self.__data__[key]
             if proxy.model != value:
                 self.__data__[key].model = value
                 proxy.is_dirty = True
 
-            if self.save_on_change:
+            if self.save_on_change and not skip_autosave:
                 self.commit(proxy)
 
             return cast(T, proxy)
@@ -205,21 +225,96 @@ class Slowstore(Generic[T]):
         self.__data__[key] = proxy
         return cast(T, proxy)
 
+    @ensure_loaded
+    def add_range(
+        self,
+        values: Sequence[T],
+        key_selector: Callable[["Slowstore", T], str] | None = None,
+    ):
+        proxies = []
+        for value in values:
+            key = self.key_for(value, key_selector)
+            proxies.append(self.upsert(key, value, skip_autosave=True))
+        if self.save_on_change:
+            self.commit(*proxies)
+
+    @ensure_loaded
     def delete(self, key: str) -> bool:
-        self.__ensure_loaded__()
         if key in self.__data__:
             del self.__data__[key]
             os.remove(f"{self.directory}/{self.__sanitize_file_name__(key)}.json")
             return True
         return False
 
-    def __contains__(self, key: str | ModelProxy[T]) -> bool:
-        self.__ensure_loaded__()
 
+    @ensure_loaded
+    def filter(self, filter: Callable[[str, T], bool]):
+        """yield all models that satisfy the filter function"""
+        for key, proxy in self.__data__.items():
+            if filter(key, cast(T, proxy)):
+                yield cast(T, proxy)
+
+    @ensure_loaded
+    def first(
+        self,
+        filter: Callable[[str, T], bool | Literal[True] | Literal[False]] | None = None,
+    ) -> T | None:
+        """return the model that satisfy the filter function otherwise return None"""
+        for key, proxy in self.__data__.items():
+            if filter is not None and filter(key, cast(T, proxy)):
+                return cast(T, proxy)
+            return cast(T, proxy)
+        return None
+
+    @ensure_loaded
+    def update(
+        self,
+        filter: Callable[[str, ModelProxy], bool],
+        updater: Callable[[str, ModelProxy], None],
+    ):
+        for key, proxy in self.__data__.items():
+            if filter(key, proxy):
+                updater(key, proxy)
+
+    @ensure_loaded
+    def values(self):
+        for x in self.__data__:
+            yield self.get(x)
+
+    @ensure_loaded
+    def commit_all(self):
+        for proxy in self.__data__.values():
+            self.commit(proxy)
+
+    @ensure_loaded
+    def commit(self, *items: ModelProxy[T]):
+        for item in items:
+            if item.store != self:
+                raise ValueError("Item does not belong to this store")
+            if item.is_dirty:
+                with open(
+                    f"{self.directory}/{self.__sanitize_file_name__(item.__key__)}.json",
+                    "w",
+                ) as f:
+                    d = item.model.__dict__
+                    if isinstance(item.model, BaseModel):
+                        d = cast(BaseModel, item.model).model_dump()
+                    d["__key__"] = item.__key__
+                    if self.save_changes_to_file:
+                        d["__changes__"] = [x.__dict__ for x in item.__changes__]
+                    f.write(json.dumps(d, indent=2, default=json_default))
+                item.is_dirty = False
+
+    @ensure_loaded
+    def __contains__(self, key: str | ModelProxy[T]) -> bool:
         if isinstance(key, ModelProxy):
             return key.__key__ in self.__data__
 
         return key in self.__data__
+
+    @ensure_loaded
+    def __iter__(self):
+        return iter(self.__data__.keys())
 
     def __getitem__(self, key: str):
         return cast(T, self.get(key))
@@ -229,37 +324,6 @@ class Slowstore(Generic[T]):
 
     def __delitem__(self, key: str):
         return self.delete(key)
-
-    def filter(self, filter: Callable[[str, ModelProxy], bool]):
-        """yield all models that satisfy the filter function"""
-        for key, model in self.__data__.items():
-            if filter(key, model):
-                yield cast(T, model)
-
-    def first(
-        self,
-        filter: Callable[[str, ModelProxy[T]], bool | Literal[True] | Literal[False]],
-    ) -> T | None:
-        """return the model that satisfy the filter function otherwise return None"""
-        self.__ensure_loaded__()
-        for key, model in self.__data__.items():
-            if filter(key, model):
-                return cast(T, model)
-        return None
-
-    def update(
-        self,
-        filter: Callable[[str, ModelProxy], bool],
-        updater: Callable[[str, ModelProxy], None],
-    ):
-        for key, model in self.__data__.items():
-            if filter(key, model):
-                updater(key, model)
-
-    def all(self):
-        self.__ensure_loaded__()
-        for x in self.__data__:
-            yield self.get(x)
 
     def load(self):
         if not os.path.exists(self.directory):
@@ -273,7 +337,7 @@ class Slowstore(Generic[T]):
                     change_dicts = d.get("__changes__", [])
 
                     del d["__key__"]
-                    if '__changes__' in d:
+                    if "__changes__" in d:
                         del d["__changes__"]
 
                     proxy = ModelProxy[T](store=self, key=key, model=self.cls(**d))
@@ -294,32 +358,26 @@ class Slowstore(Generic[T]):
         self.__changes__ = []
         self.loaded = False
 
-    def commit_all(self):
-        self.__ensure_loaded__()
-        for proxy in self.__data__.values():
-            self.commit(proxy)
-
-    def commit(self, item: ModelProxy[T]):
-        self.__ensure_loaded__()
-        if item.store != self:
-            raise ValueError("Item does not belong to this store")
-        if item.is_dirty:
-            with open(
-                f"{self.directory}/{self.__sanitize_file_name__(item.__key__)}.json",
-                "w",
-            ) as f:
-                d = item.model.__dict__
-                if isinstance(item.model, BaseModel):
-                    d = cast(BaseModel, item.model).model_dump()
-                d["__key__"] = item.__key__
-                if self.save_changes_to_file:
-                    d["__changes__"] = [x.__dict__ for x in item.__changes__]
-                f.write(json.dumps(d, indent=2, default=json_default))
-            item.is_dirty = False
-
-    def __ensure_loaded__(self):
-        if not self.loaded:
-            self.load()
+    def key_for(
+        self,
+        value: T,
+        key_or_selector: Callable[["Slowstore", T], str] | str | None = None,
+    ) -> str:
+        key = None
+        if key_or_selector is not None:
+            if callable(key_or_selector):
+                key = key_or_selector(self, value)
+            else:
+                key = key_or_selector
+        if self.key_selector is not None:
+            key = self.key_selector(self, value)
+        elif value.__dict__.get("__key__") is not None:
+            key = value.__dict__.get("__key__")
+        elif value.__dict__.get("id") is not None:
+            key = value.__dict__.get("id")
+        if key is None:
+            raise ValueError("Could not determine key for value")
+        return key
 
     def __sanitize_file_name__(self, name: str):
         return (
@@ -333,14 +391,12 @@ class Slowstore(Generic[T]):
             .lower()
         )
 
-    def __iter__(self):
-        self.__ensure_loaded__()
-        return iter(self.__data__.keys())
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):  # pyright:ignore
+    def __exit__(self, exc_type, exc_val, exc_tb):  # pyright: ignore
+
         if exc_type is None and self.save_on_exit:
             self.commit_all()
             self.__data__ = {}
@@ -349,7 +405,6 @@ class Slowstore(Generic[T]):
             self.__data__ = {}
             self.loaded = False
         return False
-
 
 def json_default(o):
     if isinstance(o, (datetime.date, datetime.datetime)):
