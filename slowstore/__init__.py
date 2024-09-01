@@ -127,10 +127,12 @@ class ModelProxy(Generic[T]):
         self.__changes__.insert(0, change)
 
     def __reset__(self, count: int = sys.maxsize):
+        
         size = len(self.__changes__)
-        while size > 0 and count > 0:
+        counter = 0
+        while size > 0 and counter < count:
             change = self.__changes__.pop(0)
-            count -= 1
+            counter += 1
             size -= 1
             change.undo(self)
         if count > 0 and self.store.save_on_change:
@@ -154,6 +156,22 @@ class Slowstore(Generic[T]):
 
     :param save_on_exit: If the store should save data on exit
     :type save_on_exit: bool, Defaults to True
+
+    :param load_changes_from_file: If the store should load changes from file
+    :type load_changes_from_file: bool, Defaults to False
+
+    :param save_changes_to_file: If the store should save changes to file
+    :type save_changes_to_file: bool, Defaults to True
+
+    :param key_selector: A function that generates a key for a model
+    :type key_selector: Callable[[Slowstore, T], str], Defaults to None
+
+    :param encoding: The encoding to use when reading and writing files
+    :type encoding: str, Defaults to "utf-8"
+
+    :param ensure_ascii: If the store should ensure ascii when saving
+    :type ensure_ascii: bool, Defaults to False
+
     """
 
     def __init__(self, cls: type, directory: str, **kwargs):
@@ -187,7 +205,20 @@ class Slowstore(Generic[T]):
     def set(self, value: T, skip_autosave: bool = False):
         """same as upsert but it generates the key using the key_selector function"""
         key = self.key_for(value)
-        self.upsert(key, value, skip_autosave)
+        return self.upsert(key, value, skip_autosave)
+        
+
+    def create(self, *args, **kwargs) -> T:
+        """
+        Creates a new object of the model type and adds it to the store
+        Note: create can only be used if:
+            - store has a key_selector function
+            - model has a __key__ 
+            - model has an id field
+        """
+        value = self.cls(*args, **kwargs)
+        key = self.key_for(value)
+        return self.upsert(key, value)
 
     @ensure_loaded
     def upsert(self, key: str, value: T, skip_autosave=False) -> T:
@@ -400,7 +431,7 @@ class Slowstore(Generic[T]):
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):  # pyright: ignore
+    def __exit__(self, exc_type, *_): 
 
         if exc_type is None and self.save_on_exit:
             self.commit_all()
