@@ -1,6 +1,6 @@
 TEST_ARGS = "-v"
 
-publish: build version_bump tag push
+publish: build test version_bump tag push
 	poetry --build publish
 
 build:
