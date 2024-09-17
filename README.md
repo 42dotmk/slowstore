@@ -38,17 +38,17 @@ dennis.birthday()      # will also trigger another change in the age field and i
 {
   "name": "DENIS",
   "age": 33,
-  "__key__": "dennis",
+  "__key__": "denis",
   "__changes__": [
     {
-      "key": "dennis",
+      "__key__": "denis",
       "prop_name": "age",
       "prev_val": 32,
       "new_val": 33,
       "date": "2024-08-28T19:04:12.840353"
     },
     {
-      "key": "dennis",
+      "__key__": "denis",
       "prop_name": "name",
       "prev_val": "denis",
       "new_val": "DENIS",
