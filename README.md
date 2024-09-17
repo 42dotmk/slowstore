@@ -7,10 +7,7 @@ It is designed to be easy to plug into your program, without need of servers, co
 
 **Slowstore*  it is intended to be used for exploration and debugging of my program behaviour.
 
-## Installation
-
-You can install Slowstore using pip:
-
+#### Installation
 ```bash
 pip install slowstore
 ```
