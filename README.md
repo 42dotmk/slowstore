@@ -1,7 +1,7 @@
 # Slowstore
-Simple key-value store that stores your objects as JSON on file system. 
+Simple object store that stores your objects as JSON files(per object). 
 
-It directly maps your python objects to JSON files and every object is auto synced to its JSON file. 
+It directly maps your python objects to JSON files and every object is auto synced to its coresponding JSON file (by default). 
 
 It is designed to be easy to plug into your program, without need of servers, connection strings, or any setup just set the directory where you would like to store your files.
 
