@@ -1,16 +1,13 @@
 # Slowstore
-Simple key-value store that stores your objects as JSON on file system. 
+Easy to use, object store that stores your objects as JSON files(per object). 
 
-It directly maps your python objects to JSON files and every object is auto synced to its JSON file. 
+It directly maps your python objects to JSON files and every object is auto synced to its coresponding JSON file (by default). 
 
 It is designed to be easy to plug into your program, without need of servers, connection strings, or any setup just set the directory where you would like to store your files.
 
 **Slowstore*  it is intended to be used for exploration and debugging of my program behaviour.
 
-## Installation
-
-You can install Slowstore using pip:
-
+#### Installation
 ```bash
 pip install slowstore
 ```
@@ -25,43 +22,30 @@ from pydantic import BaseModel
 class SampleModel(BaseModel):
     name: str
     age: int = 0
-
     def birthday(self):
         self.age += 1
 
-# Create the store to save data under "mydata" directory
-store = Slowstore[SampleModel](SampleModel, "mydata")
-
-# This is how you add or update an object in the store
-dennis = store.upsert("dennis", SampleModel(name="denis", age=32))
-
-# immediately after previous line is evaluated,
-# you will have a json file (mydata/dennis.json) represening this object
-
-dennis.name = "DENIS"
-# here the name in the json will also change from "dennis" to "DENIS"
-# also the associated change will be tracked so you can further inspect if needed.
-
-dennis.birthday()
-# will also trigger another change in the age field and it will be reflected in the json file. 
-
+store = Slowstore[SampleModel](SampleModel, "mydata", key_selector=lambda x: x.name)  # `key_selector` function is used to compose the key by which the object is tracked in the store)
+dennis = store.add(name="denis", age=32)
+dennis.name = "DENIS"  # here the name in the json will also change from "dennis" to "DENIS"
+dennis.birthday()      # will also trigger another change in the age field and it will be reflected in the json file. 
 ```
 `mydata/dennis.json` after running this program will look like:
 ```json
 {
   "name": "DENIS",
   "age": 33,
-  "__key__": "dennis",
+  "__key__": "denis",
   "__changes__": [
     {
-      "key": "dennis",
+      "__key__": "denis",
       "prop_name": "age",
       "prev_val": 32,
       "new_val": 33,
       "date": "2024-08-28T19:04:12.840353"
     },
     {
-      "key": "dennis",
+      "__key__": "denis",
       "prop_name": "name",
       "prev_val": "denis",
       "new_val": "DENIS",
