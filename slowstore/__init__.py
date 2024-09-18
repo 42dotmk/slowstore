@@ -7,11 +7,9 @@ import datetime
 from pydantic import BaseModel
 from functools import wraps
 
-from typing import Any, Callable, Generic, List, Literal, TypeVar, cast, Sequence
+from typing import Any, Callable, Generic, List, Literal, TypeVar, cast, Sequence, Sized
 
 T = TypeVar("T")
-
-from logging import getLogger as get_logger
 
 logger = get_logger("SLOWSTORE")
 
@@ -28,7 +26,6 @@ def ensure_loaded(func):
 
 class Change(Generic[T]):
     """A property change that can be undone or redone on a model"""
-
 
     # Not supporting this yet, since i dont need it
     transaction: str = ""
@@ -127,7 +124,6 @@ class ModelProxy(Generic[T]):
         self.__changes__.insert(0, change)
 
     def __reset__(self, count: int = sys.maxsize):
-        
         size = len(self.__changes__)
         counter = 0
         while size > 0 and counter < count:
@@ -138,8 +134,11 @@ class ModelProxy(Generic[T]):
         if count > 0 and self.store.save_on_change:
             self.commit()
 
+    def __repr__(self):
+        return "ModelProxy(" + self.model.__repr__() + ")"
 
-class Slowstore(Generic[T]):
+
+class Slowstore(Sized, Generic[T]):
     """A simple key-value store that persists data to disk,
     it uses a pydantic model as the value type
     :param cls: The class
@@ -206,14 +205,17 @@ class Slowstore(Generic[T]):
         """same as upsert but it generates the key using the key_selector function"""
         key = self.key_for(value)
         return self.upsert(key, value, skip_autosave)
-        
 
+    def __len__(self):
+        return len(self.__data__)
+
+    @ensure_loaded
     def create(self, *args, **kwargs) -> T:
         """
         Creates a new object of the model type and adds it to the store
         Note: create can only be used if:
             - store has a key_selector function
-            - model has a __key__ 
+            - model has a __key__
             - model has an id field
         """
         value = self.cls(*args, **kwargs)
@@ -267,10 +269,10 @@ class Slowstore(Generic[T]):
         return False
 
     @ensure_loaded
-    def filter(self, filter: Callable[[str, T], bool]):
+    def filter(self, filter: Callable[[T], bool]):
         """yield all models that satisfy the filter function"""
-        for key, proxy in self.__data__.items():
-            if filter(key, cast(T, proxy)):
+        for proxy in self.values():
+            if filter(cast(T, proxy)):
                 yield cast(T, proxy)
 
     @ensure_loaded
@@ -299,6 +301,10 @@ class Slowstore(Generic[T]):
     def values(self):
         for x in self.__data__:
             yield cast(T, self.get(x))
+
+    @ensure_loaded
+    def keys(self):
+        return self.__data__.keys()
 
     @ensure_loaded
     def commit_all(self):
@@ -341,18 +347,25 @@ class Slowstore(Generic[T]):
 
     @ensure_loaded
     def __iter__(self):
-        return iter(self.__data__.keys())
+        return iter(self.values())
 
+    @ensure_loaded
     def __getitem__(self, key: str):
         return cast(T, self.get(key))
 
+    @ensure_loaded
     def __setitem__(self, key: str, value: T):
         return cast(T, self.upsert(key, value))
 
+    @ensure_loaded
     def __delitem__(self, key: str):
         return self.delete(key)
 
     def load(self):
+        self.__json_load__()
+        return self
+
+    def __json_load__(self):
         if not os.path.exists(self.directory):
             os.makedirs(self.directory, exist_ok=True)
         self.__data__ = {}
@@ -407,7 +420,7 @@ class Slowstore(Generic[T]):
             else:
                 key = key_or_selector
         if self.key_selector is not None:
-            key = self.key_selector(self, value)
+            key = cast(Any, self.key_selector)(value)
         elif value.__dict__.get("__key__") is not None:
             key = value.__dict__.get("__key__")
         elif value.__dict__.get("id") is not None:
@@ -425,14 +438,17 @@ class Slowstore(Generic[T]):
             .replace(".", "_")
             .replace("!", "_")
             .replace("?", "_")
+            .replace("&", "_")
+            .replace(";", "_")
+            .replace("|", "_")
+            .replace("/", "_")
             .lower()
         )
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, *_): 
-
+    def __exit__(self, exc_type, *_):
         if exc_type is None and self.save_on_exit:
             self.commit_all()
             self.__data__ = {}

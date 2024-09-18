@@ -57,8 +57,8 @@ def test_undo(store: Slowstore[SampleModel]):
 
 def test_query(store):
     populate_store(store)
-    assert len(list(store.filter(lambda _, v: v.name == "test1"))) == 1
-    assert len(list(store.filter(lambda _, v: v.name == "test10"))) == 0
+    assert len(list(store.filter(lambda v: v.name == "test1"))) == 1
+    assert len(list(store.filter(lambda v: v.name == "test10"))) == 0
 
 
 def test_remove(store):
