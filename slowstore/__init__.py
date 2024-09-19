@@ -278,24 +278,23 @@ class Slowstore(Sized, Generic[T]):
     @ensure_loaded
     def first(
         self,
-        filter: Callable[[str, T], bool | Literal[True] | Literal[False]] | None = None,
+        filter: Callable[[T], bool | Literal[True] | Literal[False]] | None = None,
     ) -> T | None:
         """return the model that satisfy the filter function otherwise return None"""
-        for key, proxy in self.__data__.items():
-            if filter is not None and filter(key, cast(T, proxy)):
-                return cast(T, proxy)
-            return cast(T, proxy)
+        for proxy in self.values():
+            if filter is None or filter(proxy):
+                return proxy
         return None
 
     @ensure_loaded
     def update(
         self,
-        filter: Callable[[str, ModelProxy], bool],
-        updater: Callable[[str, ModelProxy], None],
+        filter: Callable[[T], bool],
+        updater: Callable[[T], None],
     ):
-        for key, proxy in self.__data__.items():
-            if filter(key, proxy):
-                updater(key, proxy)
+        for proxy in self.values():
+            if filter(proxy):
+                updater(proxy)
 
     @ensure_loaded
     def values(self):
