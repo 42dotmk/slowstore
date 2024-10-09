@@ -7,7 +7,7 @@ import datetime
 from pydantic import BaseModel
 from functools import wraps
 
-from typing import Any, Callable, Generic, List, Literal, TypeVar, cast, Sequence, Sized
+from typing import Any, Callable, Generic, List, Literal, TypeVar, cast, Sized
 
 T = TypeVar("T")
 
@@ -197,8 +197,21 @@ class Slowstore(Sized, Generic[T]):
 
     @ensure_loaded
     def get(self, key) -> T | None:
-        """gets an object from the story"""
+        """gets an object from the store wrapped in a proxy but still casted as the model"""
         return cast(T, self.__data__.get(key))
+
+    @ensure_loaded
+    def get_model(self, key) -> T | None:
+        """gets an object from the store but only the raw model"""
+        res = self.__data__.get(key)
+        if res:
+            return res.model
+        return None
+
+    @ensure_loaded
+    def get_proxy(self, key) -> T | None:
+        """gets an object from the store as a proxy"""
+        return self.__data__.get(key)
 
     @ensure_loaded
     def set(self, value: T, skip_autosave: bool = False):
@@ -250,7 +263,7 @@ class Slowstore(Sized, Generic[T]):
     @ensure_loaded
     def add_range(
         self,
-        values: Sequence[T],
+        values: List[T],
         key_selector: Callable[["Slowstore", T], str] | None = None,
     ):
         proxies = []
@@ -274,6 +287,15 @@ class Slowstore(Sized, Generic[T]):
         for proxy in self.values():
             if filter(cast(T, proxy)):
                 yield cast(T, proxy)
+
+    def as_proxy(self, item: T) -> ModelProxy[T]:
+        if isinstance(item, ModelProxy):
+            return cast(ModelProxy[T], item)
+
+    def as_model(self, item: ModelProxy[T] | None) -> T | None:
+        if item is None:
+            return None
+        return cast(T, item)
 
     @ensure_loaded
     def first(
@@ -300,6 +322,11 @@ class Slowstore(Sized, Generic[T]):
     def values(self):
         for x in self.__data__:
             yield cast(T, self.get(x))
+
+    @ensure_loaded
+    def raw_values(self):
+        for x in self.__data__:
+            yield self.__data__[x].model
 
     @ensure_loaded
     def keys(self):
@@ -428,7 +455,9 @@ class Slowstore(Sized, Generic[T]):
             raise ValueError("Could not determine key for value")
         return key
 
-    def __sanitize_file_name__(self, name: str):
+    def __sanitize_file_name__(self, name: str | int):
+        name = str(name)
+
         return (
             name.replace("/", "_")
             .replace("\\", "_")
