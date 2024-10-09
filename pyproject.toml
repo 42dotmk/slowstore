@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "slowstore"
-version = "1.0.9"
+version = "1.0.10"
 description = "File json storage backend for your collections"
 authors = ["Costa Halicea <costa@codechem.com>"]
 
