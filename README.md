@@ -131,8 +131,13 @@ At the moment Slowstore works with Pydantic models, but I plan to add support fo
 - [X] **Commit**: Commit changes to the store
 - [ ] **Partial load**: Load only the items you need, and lazy load the rest
 - [ ] **Transactions**: Add support for transactions
-- [ ] **Non-Pydantic objects**: Add support for other types of objects
+- [X] **Non-Pydantic objects**: Add support for other types of objects
 - [ ] **Indexes**: Add indexes to the store to speed up queries
+- [ ] **Relationships**: Add support for relationships between objects
+- [ ] Thread locking/Multi-threading support
+- [ ] Object expiration support (so you can use it as a cache and session store)
+- [ ] Performance tests and comparisons
+- [ ] **Custom serialization**: Add support for custom serialization/deserialization
 
 
 ## How it works
