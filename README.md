@@ -1,8 +1,6 @@
 # Slowstore
 Easy to use, object store that stores your objects as JSON files(per object). 
-
 It directly maps your python objects to JSON files and every object is auto synced to its coresponding JSON file (by default). 
-
 It is designed to be easy to plug into your program, without need of servers, connection strings, or any setup just set the directory where you would like to store your files.
 
 **Slowstore*  it is intended to be used for exploration and debugging of my program behaviour.
@@ -54,7 +52,7 @@ dennis.birthday()      # will also trigger another change in the age field and i
   ]
 }
 ```
-`Slowstore` tracks what happened in your small program on every field.
+`Slowstore` tracks what happened in your small program at all times.
 You can toggle the `save_on_change` flat at any time after the store is created, 
 or you can also set the `save_on_change` flag to your liking in the constructor of the `store`
 
