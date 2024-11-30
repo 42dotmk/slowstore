@@ -14,7 +14,7 @@ pip install slowstore
 You can create a new Slowstore instance by calling the constructor:
 
 ```python
-from slowstore import Slowstore
+from slowstore import Store
 from pydantic import BaseModel
 
 class SampleModel(BaseModel):
@@ -23,7 +23,7 @@ class SampleModel(BaseModel):
     def birthday(self):
         self.age += 1
 
-store = Slowstore[SampleModel](SampleModel, "mydata", key_selector=lambda x: x.name)  # `key_selector` function is used to compose the key by which the object is tracked in the store)
+store = Store[SampleModel](SampleModel, "mydata", key_selector=lambda x: x.name)  # `key_selector` function is used to compose the key by which the object is tracked in the store)
 m = SampleModel(name="john", age=30)
 dennis = store.add(name="denis", age=32)
 store.set(m)
@@ -55,7 +55,7 @@ dennis.birthday()      # will also trigger another change in the age field and i
   ]
 }
 ```
-`Slowstore` tracks what happened in your small program at all times.
+`Store` tracks what happened in your small program at all times.
 You can toggle the `save_on_change` flat at any time after the store is created, 
 or you can also set the `save_on_change` flag to your liking in the constructor of the `store`
 
