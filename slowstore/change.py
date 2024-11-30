@@ -53,7 +53,7 @@ class Change(Generic[T]):
         self.key: str = kwargs["key"]
         self.date: datetime.datetime = datetime.datetime.now()
 
-    def undo(self, model: "slowstore.ModelProxy[T]"):
+    def undo(self, model: "slowstore.Proxy[T]"):
         if self.kind == ChangeKind.UPDATE:
             model.__setattr__(self.prop_name, self.prev_val)
         elif self.kind == ChangeKind.ADD:
@@ -61,7 +61,7 @@ class Change(Generic[T]):
         elif self.kind == ChangeKind.DELETE:
             model.store.upsert(self.key, self.model)
 
-    def redo(self, model: "slowstore.ModelProxy[T]"):
+    def redo(self, model: "slowstore.Proxy[T]"):
         if self.kind == ChangeKind.UPDATE:
             model.__setattr__(self.prop_name, self.new_val)
         elif self.kind == ChangeKind.ADD:

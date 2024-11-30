@@ -25,10 +25,10 @@ __special_fields__ = [
 ]
 
 
-class ModelProxy(Generic[T]):
+class Proxy(Generic[T]):
 
-    def __init__(self, store: "slowstore.Slowstore[T]", key: str, model: T):
-        self.store: "slowstore.Slowstore[T]" = store
+    def __init__(self, store: "slowstore.Store[T]", key: str, model: T):
+        self.store: "slowstore.Store[T]" = store
         self.model: T = model
         self.is_dirty: bool = False
 
@@ -115,3 +115,4 @@ class ModelProxy(Generic[T]):
 
     def __repr__(self):
         return "ModelProxy(" + self.model.__repr__() + ")"
+

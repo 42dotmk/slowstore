@@ -1,5 +1,5 @@
 import os
-from slowstore import Change, Slowstore, ModelProxy
+from slowstore import Change, Store, Proxy
 from pydantic import BaseModel
 import pytest
 from typing import cast
@@ -18,7 +18,7 @@ class SampleModel(BaseModel):
 
 @pytest.fixture()
 def store():
-    store = Slowstore[SampleModel](SampleModel, os.path.join(DATA_DIR, "test"))
+    store = Store[SampleModel](SampleModel, os.path.join(DATA_DIR, "test"))
     store.clear()
 
     yield store
@@ -27,24 +27,24 @@ def store():
     # shutil.rmtree(DATA_DIR, ignore_errors=True)
 
 
-def load_store() -> Slowstore[SampleModel]:
-    return Slowstore[SampleModel](SampleModel, os.path.join(DATA_DIR, "test")).load()
+def load_store() -> Store[SampleModel]:
+    return Store[SampleModel](SampleModel, os.path.join(DATA_DIR, "test")).load()
 
 
-def populate_store(store: Slowstore[SampleModel]):
+def populate_store(store: Store[SampleModel]):
     for i in range(0, 10):
         store.upsert(f"test://{i}?", SampleModel(name=f"test{i}"))
 
 
-def test_commit_all(store: Slowstore[SampleModel]):
+def test_commit_all(store: Store[SampleModel]):
     for i in range(0, 10):
         store.upsert(f"test://{i}?", SampleModel(name=f"test{i}"))
 
 
-def test_undo(store: Slowstore[SampleModel]):
+def test_undo(store: Store[SampleModel]):
     key = "test://1"
     model = store.upsert(key, SampleModel(name="test1"))
-    proxy = cast(ModelProxy, model)
+    proxy = cast(Proxy, model)
     model.name = "another"
     print(model.name)
     assert model.name == "another"
@@ -59,7 +59,7 @@ def test_query(store):
     assert len(list(store.filter(lambda v: v.name == "test10"))) == 0
 
 
-def test_remove(store:Slowstore[SampleModel]):
+def test_remove(store:Store[SampleModel]):
     populate_store(store)
     model = store.first(lambda *_: True)
     assert model is not None
@@ -68,7 +68,7 @@ def test_remove(store:Slowstore[SampleModel]):
     assert key not in store
 
 
-def test_update_from_instance_method(store: Slowstore[SampleModel]):
+def test_update_from_instance_method(store: Store[SampleModel]):
     model = store.upsert("test://1", SampleModel(name="test1"))
     model.name = "from_test"
     model.sample_instance_method()
@@ -81,7 +81,7 @@ def test_update_from_instance_method(store: Slowstore[SampleModel]):
     store.clear()
 
 
-def test_save_changes_on_file(store: Slowstore[SampleModel]):
+def test_save_changes_on_file(store: Store[SampleModel]):
     key = "test"
     model = store.upsert(key, SampleModel(name="test"))
     model.name = "tito"
@@ -94,7 +94,7 @@ def test_save_changes_on_file(store: Slowstore[SampleModel]):
     proxy = store.as_proxy(model2)
     assert len(proxy.__changes__) == 1
 
-def test_notifications_on_create(store: Slowstore[SampleModel]):
+def test_notifications_on_create(store: Store[SampleModel]):
     hook_called = False
     def on_change(_, *changes):
         nonlocal hook_called
@@ -107,7 +107,7 @@ def test_notifications_on_create(store: Slowstore[SampleModel]):
     assert hook_called
 
 
-def test_notifications_on_delete(store: Slowstore[SampleModel]):
+def test_notifications_on_delete(store: Store[SampleModel]):
     hook_called = False
     def on_change(_, *changes):
         nonlocal hook_called

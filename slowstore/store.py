@@ -4,7 +4,7 @@ import os
 import shutil
 from pydantic import BaseModel
 
-from .model_proxy import ModelProxy, Change, ChangeKind
+from .proxy import Proxy, Change, ChangeKind
 from .utils import json_default_serializer, ensure_loaded
 
 from typing import Any, Callable, Generic, List, Literal, TypeVar, cast, Sized
@@ -15,7 +15,7 @@ logger = get_logger("SLOWSTORE")
 
 
 
-class Slowstore(Sized, Generic[T]):
+class Store(Sized, Generic[T]):
 
     def __init__(self, cls: type, directory: str, **kwargs):
         """Creates a new Slowstore instance"""
@@ -26,13 +26,13 @@ class Slowstore(Sized, Generic[T]):
         self.save_on_exit: bool = kwargs.get("save_on_exit", True)
         self.load_changes_from_file: bool = kwargs.get("load_changes_from_file", False)
         self.save_changes_to_file: bool = kwargs.get("save_changes_to_file", True)
-        self.key_selector: Callable[["Slowstore[T]", T], str] | None = None
+        self.key_selector: Callable[["Store[T]", T], str] | None = None
 
         self.encoding: str = kwargs.get("encoding", "utf-8")
         self.ensure_ascii: bool = kwargs.get("ensure_ascii", False)
-        self.change_hooks: List[Callable[[ModelProxy[T], List[Change]], None]] = []
+        self.change_hooks: List[Callable[[Proxy[T], List[Change]], None]] = []
 
-        self.key_selector: Callable[["Slowstore[T]", T], str] | None = kwargs.get(
+        self.key_selector: Callable[["Store[T]", T], str] | None = kwargs.get(
             "key_selector", None
         )
         self.loaded = False
@@ -87,7 +87,7 @@ class Slowstore(Sized, Generic[T]):
         if we overwrite the key it will completely change the underlying model and this can cause data inconsistencies
         """
         changes = []
-        proxy: ModelProxy[T]
+        proxy: Proxy[T]
         if key in self.__data__:
             proxy = self.__data__[key]
             if proxy.model == value:
@@ -111,7 +111,7 @@ class Slowstore(Sized, Generic[T]):
                         changes.append(change)
 
         else:
-            proxy = ModelProxy[T](self, key, value)
+            proxy = Proxy[T](self, key, value)
             proxy.is_dirty = True
             self.__data__[key] = proxy
             changes.append(Change(kind=ChangeKind.ADD, key=key, model=value))
@@ -125,7 +125,7 @@ class Slowstore(Sized, Generic[T]):
         return cast(T, proxy)
 
     def __get_change_dict__(self, change_obj: Any):
-        if isinstance(change_obj, ModelProxy):
+        if isinstance(change_obj, Proxy):
             return change_obj.model.__dict__
         if hasattr(change_obj, "__dict__"):
             return change_obj.__dict__
@@ -138,7 +138,7 @@ class Slowstore(Sized, Generic[T]):
     def add_range(
         self,
         values: List[T],
-        key_selector: Callable[["Slowstore", T], str] | None = None,
+        key_selector: Callable[["Store", T], str] | None = None,
         skip_autosave_for_each: bool = True,
         skip_autosave: bool = False,
     ):
@@ -175,12 +175,12 @@ class Slowstore(Sized, Generic[T]):
             if filter(cast(T, proxy)):
                 yield cast(T, proxy)
 
-    def as_proxy(self, item: T) -> ModelProxy[T]:
-        if isinstance(item, ModelProxy):
-            return cast(ModelProxy[T], item)
+    def as_proxy(self, item: T) -> Proxy[T]:
+        if isinstance(item, Proxy):
+            return cast(Proxy[T], item)
         raise ValueError("Item is not a proxy")
 
-    def as_model(self, item: ModelProxy[T]):
+    def as_model(self, item: Proxy[T]):
         return cast(T, item)
 
     @ensure_loaded
@@ -221,10 +221,10 @@ class Slowstore(Sized, Generic[T]):
     @ensure_loaded
     def commit_all(self):
         for proxy in self.values():
-            self.commit(cast(ModelProxy[T], proxy))
+            self.commit(cast(Proxy[T], proxy))
 
     @ensure_loaded
-    def commit(self, *items: ModelProxy[T]):
+    def commit(self, *items: Proxy[T]):
         for item in items:
             if item.store != self:
                 raise ValueError("Item does not belong to this store")
@@ -254,8 +254,8 @@ class Slowstore(Sized, Generic[T]):
         return len(self.__data__)
 
     @ensure_loaded
-    def __contains__(self, key: str | ModelProxy[T]) -> bool:
-        if isinstance(key, ModelProxy):
+    def __contains__(self, key: str | Proxy[T]) -> bool:
+        if isinstance(key, Proxy):
             return key.__key__ in self.__data__
 
         return key in self.__data__
@@ -297,7 +297,7 @@ class Slowstore(Sized, Generic[T]):
                     if "__changes__" in d:
                         del d["__changes__"]
 
-                    proxy = ModelProxy[T](store=self, key=key, model=self.cls(**d))
+                    proxy = Proxy[T](store=self, key=key, model=self.cls(**d))
 
                     if self.load_changes_from_file:
                         proxy.__changes__ = [Change(**x) for x in change_dicts]
@@ -318,7 +318,7 @@ class Slowstore(Sized, Generic[T]):
     def key_for(
         self,
         value: T,
-        key_or_selector: Callable[["Slowstore", T], str] | str | None = None,
+        key_or_selector: Callable[["Store", T], str] | str | None = None,
     ) -> str:
         """
         Tries to create a key for the provided value by using the following order:
@@ -344,16 +344,16 @@ class Slowstore(Sized, Generic[T]):
             raise ValueError("Could not determine key for value")
         return key
 
-    def add_change_hook(self, hook: Callable[[ModelProxy[T], List[Change]], None]):
+    def add_change_hook(self, hook: Callable[[Proxy[T], List[Change]], None]):
         self.change_hooks.append(hook)
 
-    def remove_change_hook(self, hook: Callable[[ModelProxy[T], List[Change]], None]):
+    def remove_change_hook(self, hook: Callable[[Proxy[T], List[Change]], None]):
         self.change_hooks.remove(hook)
 
     def clear_change_hooks(self):
         self.change_hooks = []
 
-    def notify_changes(self, proxy: ModelProxy[T], changes: List[Change]):
+    def notify_changes(self, proxy: Proxy[T], changes: List[Change]):
         logger.debug(f"Notifying change to {len(self.change_hooks)} hooks")
         if len(self.change_hooks) == 0 or changes is None or len(changes) == 0:
             return

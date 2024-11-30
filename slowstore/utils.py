@@ -8,7 +8,7 @@ def json_default_serializer(o):
 
 def ensure_loaded(func):
     @wraps(func)
-    def wrapper(self: "slowstore.Slowstore", *args, **kwargs):
+    def wrapper(self: "slowstore.Store", *args, **kwargs):
         if not self.loaded:
             self.load()
         return func(self, *args, **kwargs)

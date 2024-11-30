@@ -1,4 +1,4 @@
-from slowstore import Slowstore
+from slowstore import Store
 from pydantic import BaseModel
 
 class SampleModel(BaseModel):
@@ -9,7 +9,7 @@ class SampleModel(BaseModel):
         self.age += 1
 
 # Create the store to save data under "mydata" directory
-store = Slowstore[SampleModel](SampleModel, "mydata", key_selector=lambda store, model: model.name)
+store = Store[SampleModel](SampleModel, "mydata", key_selector=lambda store, model: model.name)
 
 # This is how you create an object in the store, 
 # Note that the parameters are the same as the SampleModel needs
