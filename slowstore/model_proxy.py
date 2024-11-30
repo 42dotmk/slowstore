@@ -1,8 +1,8 @@
 from logging import getLogger as get_logger
 import sys
-import datetime
 import slowstore
 from typing import Any, Generic, List, TypeVar, cast
+from .change import Change, ChangeKind
 
 logger = get_logger("SLOWSTORE")
 
@@ -21,70 +21,9 @@ __special_fields__ = [
     "__repr__",
     "__setattr__",
     "__getattr__",
-    "__orig_class__"
+    "__orig_class__",
 ]
 
-class ChangeKind:
-    ADD = "ADD"
-    UPDATE = "UPDATE"
-    DELETE = "DELETE"
-
-
-class Change(Generic[T]):
-    """A property change that can be undone or redone on a model"""
-
-    # Not supporting this yet, since i dont need it
-    transaction: str = ""
-
-    def __init__(self, **kwargs):
-        if "kind" not in kwargs:
-            self.kind = ChangeKind.UPDATE
-        else:
-            self.kind = kwargs["kind"]
-
-        if "key" not in kwargs:
-            raise ValueError("key is required")
-
-        if self.kind == ChangeKind.UPDATE:
-            if "prop_name" not in kwargs:
-                raise ValueError("prop_name is required")
-            if "prev_val" not in kwargs:
-                raise ValueError("prev_val is required")
-            if "new_val" not in kwargs:
-                raise ValueError("new_val is required")
-
-            self.prop_name: str = kwargs["prop_name"]
-            self.prev_val: Any = kwargs["prev_val"]
-            self.new_val: Any = kwargs["new_val"]
-        elif self.kind == ChangeKind.ADD:
-            if "model" not in kwargs:
-                raise ValueError("model is required")
-            self.model: T = kwargs["model"]
-        elif self.kind == ChangeKind.DELETE:
-            if "model" not in kwargs:
-                raise ValueError("model is required")
-            self.model: T = kwargs["model"]
-        else:
-            raise ValueError("Invalid change kind")
-
-        self.key: str = kwargs["key"]
-        self.date: datetime.datetime = datetime.datetime.now()
-
-    def undo(self, model: "ModelProxy[T]"):
-        if self.kind == ChangeKind.UPDATE:
-            model.__setattr__(self.prop_name, self.prev_val)
-        elif self.kind == ChangeKind.ADD:
-            model.store.delete(self.key)
-        elif self.kind == ChangeKind.DELETE:
-            model.store.upsert(self.key, self.model)
-
-    def redo(self, model: "ModelProxy[T]"):
-        if self.kind == ChangeKind.UPDATE:
-            model.__setattr__(self.prop_name, self.new_val)
-        elif self.kind == ChangeKind.ADD:
-            model.store.upsert(self.key, self.model)
-        elif self.kind == ChangeKind.DELETE:
-            model.store.delete(self.key)
 
 class ModelProxy(Generic[T]):
 
@@ -140,7 +79,6 @@ class ModelProxy(Generic[T]):
         if self.store.save_on_change and not skip_auto_save:
             self.commit()
 
-
         return change
 
     def commit(self):
@@ -177,5 +115,3 @@ class ModelProxy(Generic[T]):
 
     def __repr__(self):
         return "ModelProxy(" + self.model.__repr__() + ")"
-
-

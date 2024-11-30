@@ -2,11 +2,10 @@ import json
 from logging import getLogger as get_logger
 import os
 import shutil
-import datetime
 from pydantic import BaseModel
-from functools import wraps
 
 from .model_proxy import ModelProxy, Change, ChangeKind
+from .utils import json_default_serializer, ensure_loaded
 
 from typing import Any, Callable, Generic, List, Literal, TypeVar, cast, Sized
 
@@ -15,14 +14,6 @@ T = TypeVar("T")
 logger = get_logger("SLOWSTORE")
 
 
-def ensure_loaded(func):
-    @wraps(func)
-    def wrapper(self: "Slowstore", *args, **kwargs):
-        if not self.loaded:
-            self.load()
-        return func(self, *args, **kwargs)
-
-    return wrapper
 
 class Slowstore(Sized, Generic[T]):
 
@@ -72,9 +63,6 @@ class Slowstore(Sized, Generic[T]):
         """same as upsert but it generates the key using the key_selector function"""
         key = self.key_for(value)
         return self.upsert(key, value, skip_autosave)
-
-    def __len__(self):
-        return len(self.__data__)
 
     @ensure_loaded
     def create(self, *args, **kwargs) -> T:
@@ -256,11 +244,14 @@ class Slowstore(Sized, Generic[T]):
                         json.dumps(
                             d,
                             indent=2,
-                            default=json_default,
+                            default=json_default_serializer,
                             ensure_ascii=self.ensure_ascii,
                         )
                     )
                 item.is_dirty = False
+
+    def __len__(self):
+        return len(self.__data__)
 
     @ensure_loaded
     def __contains__(self, key: str | ModelProxy[T]) -> bool:
@@ -403,6 +394,3 @@ class Slowstore(Sized, Generic[T]):
         return False
 
 
-def json_default(o):
-    if isinstance(o, (datetime.date, datetime.datetime)):
-        return o.isoformat()
