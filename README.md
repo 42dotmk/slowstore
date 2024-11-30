@@ -24,7 +24,9 @@ class SampleModel(BaseModel):
         self.age += 1
 
 store = Slowstore[SampleModel](SampleModel, "mydata", key_selector=lambda x: x.name)  # `key_selector` function is used to compose the key by which the object is tracked in the store)
+m = SampleModel(name="john", age=30)
 dennis = store.add(name="denis", age=32)
+store.set(m)
 dennis.name = "DENIS"  # here the name in the json will also change from "dennis" to "DENIS"
 dennis.birthday()      # will also trigger another change in the age field and it will be reflected in the json file. 
 ```
@@ -42,6 +44,7 @@ dennis.birthday()      # will also trigger another change in the age field and i
       "new_val": 33,
       "date": "2024-08-28T19:04:12.840353"
     },
+
     {
       "__key__": "denis",
       "prop_name": "name",
