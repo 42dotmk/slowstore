@@ -59,70 +59,66 @@ class Store(Sized, Generic[T]):
         return self.__data__.get(key)
 
     @ensure_loaded
-    def set(self, value: T, skip_autosave: bool = False):
+    def set(self, value: T, skip_autosave: bool = False, skip_notify: bool = False):
         """same as upsert but it generates the key using the key_selector function"""
         key = self.key_for(value)
-        return self.upsert(key, value, skip_autosave)
+        return self.upsert(key, value, skip_autosave, skip_notify)
 
     @ensure_loaded
-    def create(self, *args, **kwargs) -> T:
-        """
-        Creates a new object of the model type and adds it to the store
-        Note: create can only be used if:
-            - store has a key_selector function
-            - model has a __key__
-            - model has an id field
-        """
-        value = self.cls(*args, **kwargs)
-        key = self.key_for(value)
+    def insert(self, key:str, value:T, skip_autosave: bool = False,  skip_notify: bool = False):
         if key in self.__data__:
             raise ValueError(f"Key {key} already exists in the store")
+        proxy = Proxy[T](self, key, value)
+        proxy.is_dirty = True
+        self.__data__[key] = proxy
+        change = Change(kind=ChangeKind.ADD, key=key, model=value)
 
+        if self.save_on_change and not skip_autosave:
+            self.commit(proxy)
 
-        return self.upsert(key, value)
+        if not skip_notify:
+            self.notify_changes(proxy, [change])
+
+        return cast(T, proxy)
+
+    def update(self, key:str, value:T, skip_autosave: bool = False,  skip_notify: bool = False):
+        if key not in self.__data__:
+            raise ValueError(f"Key {key} does not exist in the store")
+
+        proxy = self.__data__[key]
+        if proxy.model == value:
+            return cast(T, proxy)
+        change_dict = self.__get_change_dict__(value)
+        changes = []
+        for prop_name in change_dict:
+            if not hasattr(proxy.model, prop_name):
+                raise ValueError(
+                    f"Property {prop_name} does not exist in model"
+                )
+            prev_val = getattr(proxy.model, prop_name)
+            new_val = change_dict[prop_name]
+            if prev_val != new_val:
+                change = proxy.__update_model_prop__(
+                    prop_name,
+                    new_val,
+                    skip_auto_save=skip_autosave,
+                    notify_changes=False,
+                )
+                if change is not None:
+                    changes.append(change)
+        if skip_notify and changes:
+            self.notify_changes(proxy, changes)
+        return cast(T, proxy)
 
     @ensure_loaded
     def upsert(self, key: str, value: T, skip_autosave=False, skip_notify=False) -> T:
-        """sets a new object in the store and returns it's proxy
-        if we overwrite the key it will completely change the underlying model and this can cause data inconsistencies
-        """
-        changes = []
-        proxy: Proxy[T]
+        """sets a new object in the store and returns it's proxy"""
         if key in self.__data__:
-            proxy = self.__data__[key]
-            if proxy.model == value:
-                return cast(T, proxy)
-            change_dict = self.__get_change_dict__(value)
-            for prop_name in change_dict:
-                if not hasattr(proxy.model, prop_name):
-                    raise ValueError(
-                        f"Property {prop_name} does not exist in model"
-                    )
-                prev_val = getattr(proxy.model, prop_name)
-                new_val = change_dict[prop_name]
-                if prev_val != new_val:
-                    change = proxy.__update_model_prop__(
-                        prop_name,
-                        new_val,
-                        skip_auto_save=skip_autosave,
-                        notify_changes=False,
-                    )
-                    if change is not None:
-                        changes.append(change)
-
+            return self.update(key, value, skip_autosave=skip_autosave, skip_notify=skip_notify)
         else:
-            proxy = Proxy[T](self, key, value)
-            proxy.is_dirty = True
-            self.__data__[key] = proxy
-            changes.append(Change(kind=ChangeKind.ADD, key=key, model=value))
+            return self.insert(key, value, skip_autosave=skip_autosave, skip_notify=skip_notify)
+           
 
-            if self.save_on_change and not skip_autosave:
-                self.commit(proxy)
-
-        if not skip_notify and len(changes) > 0:
-            self.notify_changes(proxy, changes)
-
-        return cast(T, proxy)
 
     def __get_change_dict__(self, change_obj: Any):
         if isinstance(change_obj, Proxy):
@@ -195,7 +191,7 @@ class Store(Sized, Generic[T]):
         return None
 
     @ensure_loaded
-    def update(
+    def update_where(
         self,
         filter: Callable[[T], bool],
         updater: Callable[[T], None],
