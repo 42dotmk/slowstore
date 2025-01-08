@@ -35,9 +35,9 @@ class Store(Sized, Generic[T]):
         self.key_selector: Callable[["Store[T]", T], str] | None = kwargs.get(
             "key_selector", None
         )
+        self.load_errors: list[tuple[str, Exception]] = []
         self.loaded = False
-
-        if kwargs.get("load_on_start", True):
+        if kwargs.get("load_on_start", False):
             self.load()
 
     @ensure_loaded
@@ -48,6 +48,8 @@ class Store(Sized, Generic[T]):
     @ensure_loaded
     def get_model(self, key) -> T | None:
         """gets an object from the store but only the raw model"""
+        if isinstance(key, Proxy):
+            key = key.__key__
         res = self.__data__.get(key)
         if res:
             return res.model
@@ -246,6 +248,7 @@ class Store(Sized, Generic[T]):
                     )
                 item.is_dirty = False
 
+    @ensure_loaded
     def __len__(self):
         return len(self.__data__)
 
@@ -273,12 +276,12 @@ class Store(Sized, Generic[T]):
         return self.delete(key)
 
     def load(self):
-        self.__json_load__()
-        return self
+        return self.__json_load__()
 
     def __json_load__(self):
         if not os.path.exists(self.directory):
             os.makedirs(self.directory, exist_ok=True)
+        errors = []
         self.__data__ = {}
         self.__changes__ = []
         self.loaded = False
@@ -300,7 +303,11 @@ class Store(Sized, Generic[T]):
 
                     self.__data__[key] = proxy
                 except Exception as e:
-                    logger.error(f"Error loading {filename}: {e}")
+                    errors.append((filename, e))
+                    # logger.error(f"Error loading {filename}: {e}")
+        self.load_errors = errors
+        if len(errors) > 0:
+            logger.error(f"loading {self.__class__.__name__} generated {len(errors)} errors, they are stored in load_errors list")
         self.loaded = True
         return self
 
