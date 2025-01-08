@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "slowstore"
-version = "2.0.1"
+version = "2.0.2"
 description = "File json storage backend for your collections"
 authors = ["Costa Halicea <costa@codechem.com>"]
 
@@ -14,6 +14,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = ">=3.10"
 pydantic = "^2.8.2"
+pytest = "^8.3.4"
 
 
 [tool.poetry.group.dev.dependencies]
