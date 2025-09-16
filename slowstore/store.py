@@ -1,13 +1,13 @@
 import json
-from logging import getLogger as get_logger
 import os
 import shutil
+from logging import getLogger as get_logger
+from typing import Any, Callable, Generic, Literal, Sized, TypeVar, cast
+
 from pydantic import BaseModel
 
-from .proxy import Proxy, Change, ChangeKind
-from .utils import json_default_serializer, ensure_loaded
-
-from typing import Any, Callable, Generic, List, Literal, TypeVar, cast, Sized
+from .proxy import Change, ChangeKind, Proxy
+from .utils import ensure_loaded, json_default_serializer
 
 T = TypeVar("T")
 
@@ -17,36 +17,32 @@ logger = get_logger("SLOWSTORE")
 
 class Store(Sized, Generic[T]):
 
-    def __init__(self, cls: type, directory: str, **kwargs):
+    def __init__(self, cls: type, directory: str, **kwargs: dict[str, Any]):
         """Creates a new Slowstore instance"""
 
         self.directory: str = directory
         self.cls: type = cls
-        self.save_on_change: bool = kwargs.get("save_on_change", True)
-        self.save_on_exit: bool = kwargs.get("save_on_exit", True)
-        self.load_changes_from_file: bool = kwargs.get("load_changes_from_file", False)
-        self.save_changes_to_file: bool = kwargs.get("save_changes_to_file", True)
-        self.key_selector: Callable[["Store[T]", T], str] | None = None
+        self.save_on_change: bool = cast(bool, kwargs.get("save_on_change", True))
+        self.save_on_exit: bool = cast(bool, kwargs.get("save_on_exit", True))
+        self.load_changes_from_file: bool = cast(bool, kwargs.get("load_changes_from_file", False))
+        self.save_changes_to_file: bool = cast(bool, kwargs.get("save_changes_to_file", True))
+        self.encoding: str = cast(str, kwargs.get("encoding", "utf-8"))
+        self.ensure_ascii: bool =  kwargs.get("ensure_ascii", False)  # pyright: ignore[reportAttributeAccessIssue]
+        self.change_hooks: list[Callable[[Proxy[T], list[Change[T]]], None]] = []
 
-        self.encoding: str = kwargs.get("encoding", "utf-8")
-        self.ensure_ascii: bool = kwargs.get("ensure_ascii", False)
-        self.change_hooks: List[Callable[[Proxy[T], List[Change]], None]] = []
-
-        self.key_selector: Callable[["Store[T]", T], str] | None = kwargs.get(
-            "key_selector", None
-        )
+        self.key_selector: Callable[["Store[T]", T], str] | None = cast(Callable[["Store[T]", T], str] | None, kwargs.get( "key_selector", None))
         self.load_errors: list[tuple[str, Exception]] = []
-        self.loaded = False
+        self.loaded: bool = False
         if kwargs.get("load_on_start", False):
-            self.load()
+            _ = self.load()
 
     @ensure_loaded
-    def get(self, key) -> T | None:
+    def get(self, key:str) -> T | None:
         """gets an object from the store wrapped in a proxy but still casted as the model"""
         return cast(T, self.__data__.get(key))
 
     @ensure_loaded
-    def get_model(self, key) -> T | None:
+    def get_model(self, key:str) -> T | None:
         """gets an object from the store but only the raw model"""
         if isinstance(key, Proxy):
             key = key.__key__
@@ -56,7 +52,7 @@ class Store(Sized, Generic[T]):
         return None
 
     @ensure_loaded
-    def get_proxy(self, key) -> T | None:
+    def get_proxy(self, key:str) -> T | None:
         """gets an object from the store as a proxy"""
         return self.__data__.get(key)
 
@@ -135,7 +131,7 @@ class Store(Sized, Generic[T]):
     @ensure_loaded
     def add_range(
         self,
-        values: List[T],
+        values: list[T],
         key_selector: Callable[["Store", T], str] | None = None,
         skip_autosave_for_each: bool = True,
         skip_autosave: bool = False,
@@ -234,7 +230,7 @@ class Store(Sized, Generic[T]):
                 ) as f:
                     d = item.model.__dict__
                     if isinstance(item.model, BaseModel):
-                        d = cast(BaseModel, item.model).model_dump()
+                        d = cast(BaseModel, item.model).model_dump(by_alias=True)
                     d["__key__"] = item.__key__
                     if self.save_changes_to_file:
                         d["__changes__"] = [x.__dict__ for x in item.__changes__]
@@ -282,21 +278,21 @@ class Store(Sized, Generic[T]):
         if not os.path.exists(self.directory):
             os.makedirs(self.directory, exist_ok=True)
         errors = []
-        self.__data__ = {}
-        self.__changes__ = []
+        self.__data__:dict[str, Any] = {}  
+        self.__changes__ : list[Change[T]]= []
         self.loaded = False
         for filename in os.listdir(self.directory):
             with open(f"{self.directory}/{filename}", "r", encoding=self.encoding) as f:
                 try:
                     d = json.load(f)
-                    key: str = d["__key__"]
-                    change_dicts = d.get("__changes__", [])
+                    key: str = d["__key__"]  
+                    change_dicts = d.get("__changes__", [])  
 
                     del d["__key__"]
                     if "__changes__" in d:
                         del d["__changes__"]
 
-                    proxy = Proxy[T](store=self, key=key, model=self.cls(**d))
+                    proxy = Proxy[T](store=self, key=key, model=self.cls(**d))  
 
                     if self.load_changes_from_file:
                         proxy.__changes__ = [Change(**x) for x in change_dicts]
@@ -321,7 +317,7 @@ class Store(Sized, Generic[T]):
     def key_for(
         self,
         value: T,
-        key_or_selector: Callable[["Store", T], str] | str | None = None,
+        key_or_selector: Callable[["Store", T], str] | str | None = None,  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
     ) -> str:
         """
         Tries to create a key for the provided value by using the following order:
@@ -347,16 +343,16 @@ class Store(Sized, Generic[T]):
             raise ValueError("Could not determine key for value")
         return key
 
-    def add_change_hook(self, hook: Callable[[Proxy[T], List[Change]], None]):
+    def add_change_hook(self, hook: Callable[[Proxy[T], list[Change]], None]):
         self.change_hooks.append(hook)
 
-    def remove_change_hook(self, hook: Callable[[Proxy[T], List[Change]], None]):
+    def remove_change_hook(self, hook: Callable[[Proxy[T], list[Change]], None]):
         self.change_hooks.remove(hook)
 
     def clear_change_hooks(self):
         self.change_hooks = []
 
-    def notify_changes(self, proxy: Proxy[T], changes: List[Change]):
+    def notify_changes(self, proxy: Proxy[T], changes: list[Change]):
         logger.debug(f"Notifying change to {len(self.change_hooks)} hooks")
         if len(self.change_hooks) == 0 or changes is None or len(changes) == 0:
             return
