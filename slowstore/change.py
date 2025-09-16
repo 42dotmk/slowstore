@@ -1,6 +1,5 @@
-from ctypes import cast
+from typing import cast
 import datetime
-from enum import Enum
 from typing import Any, Generic, TypeVar
 
 import slowstore
@@ -9,26 +8,24 @@ import slowstore
 T = TypeVar("T")
 
 
-class ChangeKind(Enum):
-    ADD = "ADD"
-    UPDATE = "UPDATE"
-    DELETE = "DELETE"
-
+class ChangeKind:
+    ADD: str = "ADD"
+    UPDATE: str = "UPDATE"
+    DELETE: str = "DELETE"
 
 class Change(Generic[T]):
     """A property change that can be undone or redone on a model"""
 
     # Not supporting this yet, since i dont need it
     transaction: str = ""
-    kind: ChangeKind
+    kind: str
     model: T
 
-
-    def __init__(self, **kwargs:dict[str, Any]):
+    def __init__(self, **kwargs: Any):
         if "kind" not in kwargs:
             self.kind = ChangeKind.UPDATE
         else:
-            self.kind = cast(ChangeKind, kwargs["kind"])
+            self.kind =  cast(str, kwargs.get("kind", None))
 
         if "key" not in kwargs:
             raise ValueError("key is required")
@@ -44,7 +41,7 @@ class Change(Generic[T]):
             self.prop_name: str = kwargs["prop_name"]
             self.prev_val: Any = kwargs["prev_val"]
             self.new_val: Any = kwargs["new_val"]
-        elif self.kind.value == ChangeKind.ADD:
+        elif self.kind == ChangeKind.ADD:
             if "model" not in kwargs:
                 raise ValueError("model is required")
             self.model = kwargs["model"]

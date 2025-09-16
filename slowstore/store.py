@@ -6,13 +6,16 @@ from typing import Any, Callable, Generic, Literal, Sized, TypeVar, cast
 
 from pydantic import BaseModel
 
-from .proxy import Change, ChangeKind, Proxy
+from .proxy import (
+    Change,  # pyright: ignore[reportPrivateLocalImportUsage]
+    ChangeKind,  # pyright: ignore[reportPrivateLocalImportUsage]
+    Proxy, 
+)
 from .utils import ensure_loaded, json_default_serializer
 
 T = TypeVar("T")
 
 logger = get_logger("SLOWSTORE")
-
 
 
 class Store(Sized, Generic[T]):
@@ -24,25 +27,31 @@ class Store(Sized, Generic[T]):
         self.cls: type = cls
         self.save_on_change: bool = cast(bool, kwargs.get("save_on_change", True))
         self.save_on_exit: bool = cast(bool, kwargs.get("save_on_exit", True))
-        self.load_changes_from_file: bool = cast(bool, kwargs.get("load_changes_from_file", False))
-        self.save_changes_to_file: bool = cast(bool, kwargs.get("save_changes_to_file", True))
+        self.load_changes_from_file: bool = cast(
+            bool, kwargs.get("load_changes_from_file", False)
+        )
+        self.save_changes_to_file: bool = cast(
+            bool, kwargs.get("save_changes_to_file", True)
+        )
         self.encoding: str = cast(str, kwargs.get("encoding", "utf-8"))
-        self.ensure_ascii: bool =  kwargs.get("ensure_ascii", False)  # pyright: ignore[reportAttributeAccessIssue]
+        self.ensure_ascii: bool = cast(bool, kwargs.get("ensure_ascii", False))
         self.change_hooks: list[Callable[[Proxy[T], list[Change[T]]], None]] = []
 
-        self.key_selector: Callable[["Store[T]", T], str] | None = cast(Callable[["Store[T]", T], str] | None, kwargs.get( "key_selector", None))
+        self.key_selector: Callable[["Store[T]", T], str] | None = cast(
+            Callable[["Store[T]", T], str] | None, kwargs.get("key_selector", None)
+        )
         self.load_errors: list[tuple[str, Exception]] = []
         self.loaded: bool = False
         if kwargs.get("load_on_start", False):
             _ = self.load()
 
     @ensure_loaded
-    def get(self, key:str) -> T | None:
+    def get(self, key: str) -> T | None:
         """gets an object from the store wrapped in a proxy but still casted as the model"""
         return cast(T, self.__data__.get(key))
 
     @ensure_loaded
-    def get_model(self, key:str) -> T | None:
+    def get_model(self, key: str) -> T | None:
         """gets an object from the store but only the raw model"""
         if isinstance(key, Proxy):
             key = key.__key__
@@ -52,7 +61,7 @@ class Store(Sized, Generic[T]):
         return None
 
     @ensure_loaded
-    def get_proxy(self, key:str) -> T | None:
+    def get_proxy(self, key: str) -> T | None:
         """gets an object from the store as a proxy"""
         return self.__data__.get(key)
 
@@ -63,13 +72,15 @@ class Store(Sized, Generic[T]):
         return self.upsert(key, value, skip_autosave, skip_notify)
 
     @ensure_loaded
-    def insert(self, key:str, value:T, skip_autosave: bool = False,  skip_notify: bool = False):
+    def insert(
+        self, key: str, value: T, skip_autosave: bool = False, skip_notify: bool = False
+    ):
         if key in self.__data__:
             raise ValueError(f"Key {key} already exists in the store")
         proxy = Proxy[T](self, key, value)
         proxy.is_dirty = True
         self.__data__[key] = proxy
-        change = Change(kind=ChangeKind.ADD, key=key, model=value)
+        change = Change[T](kind=ChangeKind.ADD, key=key, model=value)
 
         if self.save_on_change and not skip_autosave:
             self.commit(proxy)
@@ -79,7 +90,9 @@ class Store(Sized, Generic[T]):
 
         return cast(T, proxy)
 
-    def update(self, key:str, value:T, skip_autosave: bool = False,  skip_notify: bool = False):
+    def update(
+        self, key: str, value: T, skip_autosave: bool = False, skip_notify: bool = False
+    ):
         if key not in self.__data__:
             raise ValueError(f"Key {key} does not exist in the store")
 
@@ -87,20 +100,21 @@ class Store(Sized, Generic[T]):
         if proxy.model == value:
             return cast(T, proxy)
         change_dict = self.__get_change_dict__(value)
-        changes = []
+        changes: list[Change[T]] = []
         for prop_name in change_dict:
             if not hasattr(proxy.model, prop_name):
-                raise ValueError(
-                    f"Property {prop_name} does not exist in model"
-                )
+                raise ValueError(f"Property {prop_name} does not exist in model")
             prev_val = getattr(proxy.model, prop_name)
             new_val = change_dict[prop_name]
             if prev_val != new_val:
-                change = proxy.__update_model_prop__(
-                    prop_name,
-                    new_val,
-                    skip_auto_save=skip_autosave,
-                    notify_changes=False,
+                change = cast(
+                    Change[T] | None,
+                    proxy.__update_model_prop__(
+                        prop_name,
+                        new_val,
+                        skip_auto_save=skip_autosave,
+                        notify_changes=False,
+                    ),
                 )
                 if change is not None:
                     changes.append(change)
@@ -109,22 +123,28 @@ class Store(Sized, Generic[T]):
         return cast(T, proxy)
 
     @ensure_loaded
-    def upsert(self, key: str, value: T, skip_autosave=False, skip_notify=False) -> T:
+    def upsert(
+        self, key: str, value: T, skip_autosave: bool = False, skip_notify: bool = False
+    ) -> T:
         """sets a new object in the store and returns it's proxy"""
         if key in self.__data__:
-            return self.update(key, value, skip_autosave=skip_autosave, skip_notify=skip_notify)
+            return self.update(
+                key, value, skip_autosave=skip_autosave, skip_notify=skip_notify
+            )
         else:
-            return self.insert(key, value, skip_autosave=skip_autosave, skip_notify=skip_notify)
-           
+            return self.insert(
+                key, value, skip_autosave=skip_autosave, skip_notify=skip_notify
+            )
 
-
-    def __get_change_dict__(self, change_obj: Any):
+    def __get_change_dict__(
+        self, change_obj: Proxy[T] | dict[str, Any] | Any
+    ) -> dict[str, Any]:
         if isinstance(change_obj, Proxy):
-            return change_obj.model.__dict__
+            return cast(T, change_obj.model).__dict__
         if hasattr(change_obj, "__dict__"):
             return change_obj.__dict__
         elif isinstance(change_obj, dict):
-            return change_obj
+            return cast(dict[str, Any], change_obj)
         else:
             raise ValueError("Value must be a proxy, dict or an object")
 
@@ -132,16 +152,16 @@ class Store(Sized, Generic[T]):
     def add_range(
         self,
         values: list[T],
-        key_selector: Callable[["Store", T], str] | None = None,
+        key_selector: Callable[["Store[T]", T], str] | None = None,
         skip_autosave_for_each: bool = True,
         skip_autosave: bool = False,
     ):
-        proxies = []
+        proxies: list[Proxy[T]]= []
         for value in values:
             key = self.key_for(value, key_selector)
-            proxy = self.upsert(
+            proxy = cast(Proxy[T], self.upsert(
                 key, value, skip_autosave=skip_autosave_for_each, skip_notify=False
-            )
+            ))
             proxies.append(proxy)
 
         if self.save_on_change and not skip_autosave:
@@ -151,7 +171,7 @@ class Store(Sized, Generic[T]):
     def delete(self, key: str) -> bool:
         if key in self.__data__:
             proxy = self.__data__[key]
-            change = Change(kind=ChangeKind.DELETE, key=key, model=proxy.model)
+            change = Change[T](kind=ChangeKind.DELETE, key=key, model=proxy.model)
 
             del self.__data__[key]
 
@@ -277,22 +297,22 @@ class Store(Sized, Generic[T]):
     def __json_load__(self):
         if not os.path.exists(self.directory):
             os.makedirs(self.directory, exist_ok=True)
-        errors = []
-        self.__data__:dict[str, Any] = {}  
-        self.__changes__ : list[Change[T]]= []
+        errors: list[tuple[str, Exception]]= []
+        self.__data__: dict[str, Any] = {}
+        self.__changes__: list[Change[T]] = []
         self.loaded = False
         for filename in os.listdir(self.directory):
             with open(f"{self.directory}/{filename}", "r", encoding=self.encoding) as f:
                 try:
                     d = json.load(f)
-                    key: str = d["__key__"]  
-                    change_dicts = d.get("__changes__", [])  
+                    key: str = d["__key__"]
+                    change_dicts = d.get("__changes__", [])
 
                     del d["__key__"]
                     if "__changes__" in d:
                         del d["__changes__"]
 
-                    proxy = Proxy[T](store=self, key=key, model=self.cls(**d))  
+                    proxy = Proxy[T](store=self, key=key, model=self.cls(**d))
 
                     if self.load_changes_from_file:
                         proxy.__changes__ = [Change(**x) for x in change_dicts]
@@ -303,7 +323,9 @@ class Store(Sized, Generic[T]):
                     # logger.error(f"Error loading {filename}: {e}")
         self.load_errors = errors
         if len(errors) > 0:
-            logger.error(f"loading {self.__class__.__name__} generated {len(errors)} errors, they are stored in load_errors list")
+            logger.error(
+                f"loading {self.__class__.__name__} generated {len(errors)} errors, they are stored in load_errors list"
+            )
         self.loaded = True
         return self
 
@@ -317,7 +339,7 @@ class Store(Sized, Generic[T]):
     def key_for(
         self,
         value: T,
-        key_or_selector: Callable[["Store", T], str] | str | None = None,  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
+        key_or_selector: Callable[["Store[T]", T], str] | str | None = None,
     ) -> str:
         """
         Tries to create a key for the provided value by using the following order:
@@ -343,16 +365,16 @@ class Store(Sized, Generic[T]):
             raise ValueError("Could not determine key for value")
         return key
 
-    def add_change_hook(self, hook: Callable[[Proxy[T], list[Change]], None]):
+    def add_change_hook(self, hook: Callable[[Proxy[T], list[Change[T]]], None]):
         self.change_hooks.append(hook)
 
-    def remove_change_hook(self, hook: Callable[[Proxy[T], list[Change]], None]):
+    def remove_change_hook(self, hook: Callable[[Proxy[T], list[Change[T]]], None]):
         self.change_hooks.remove(hook)
 
     def clear_change_hooks(self):
         self.change_hooks = []
 
-    def notify_changes(self, proxy: Proxy[T], changes: list[Change]):
+    def notify_changes(self, proxy: Proxy[T], changes: list[Change[T]] | None):
         logger.debug(f"Notifying change to {len(self.change_hooks)} hooks")
         if len(self.change_hooks) == 0 or changes is None or len(changes) == 0:
             return
@@ -382,7 +404,7 @@ class Store(Sized, Generic[T]):
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, *_):
+    def __exit__(self, exc_type: type | None, *_):
         if exc_type is None and self.save_on_exit:
             self.commit_all()
             self.__data__ = {}
@@ -391,5 +413,3 @@ class Store(Sized, Generic[T]):
             self.__data__ = {}
             self.loaded = False
         return False
-
-

@@ -1,6 +1,6 @@
 import datetime
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, cast
 import slowstore
 
 def json_default_serializer(o:Any):
@@ -8,10 +8,10 @@ def json_default_serializer(o:Any):
         return o.isoformat()
 
 def ensure_loaded(func:Callable[..., Any]) -> Callable[..., Any]:
-    @wraps(func)  # pyright: ignore[reportUnknownArgumentType]
-    def wrapper(self: "slowstore.Store", *args:list[Any], **kwargs:dict[str, Any]) -> Any:
+    @wraps(func)  
+    def wrapper(self: "slowstore.Store", *args:Any, **kwargs:Any) -> Any:  # pyright: ignore[reportUnknownParameterType, reportMissingTypeArgument]
         if not self.loaded:
-            self.load()
+            _ = self.load()  # pyright: ignore[reportUnknownVariableType]
         return func(self, *args, **kwargs)
 
-    return wrapper
+    return cast(Callable[..., Any], wrapper)

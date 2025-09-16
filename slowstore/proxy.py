@@ -1,7 +1,7 @@
 from logging import getLogger as get_logger
 import sys
 import slowstore
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast, override
 from .change import Change, ChangeKind
 
 logger = get_logger("SLOWSTORE")
@@ -35,7 +35,7 @@ class Proxy(Generic[T]):
         self.__key__: str = key
         self.__changes__: list[Change[T]] = []
 
-    def __getattr__(self, name:str)-> Any:  
+    def __getattr__(self, name: str):
         if name in __special_fields__:
             logger.debug(f"Getting proxy.{name}")
             return super().__getattribute__(name)
@@ -49,21 +49,26 @@ class Proxy(Generic[T]):
                 func_name = attr.__name__
                 func = cast(Any, attr).__func__
 
-                def wrapper(*args:list[Any] , **kwargs:dict[str, Any]) -> Any:
+                def wrapper(*args: list[Any], **kwargs: dict[str, Any]) -> Any:
                     return func(self, *args, **kwargs)
 
                 wrapper.__name__ = func_name
                 return wrapper
 
-    def __setattr__(self, name:str, value:Any)-> None:
+    @override
+    def __setattr__(self, name: str, value: Any) -> None:
         if name in __special_fields__:
             logger.debug(f"Setting proxy: {name}={value}")
             super().__setattr__(name, value)
         else:
-            self.__update_model_prop__(name, value, False, True)
+            _ = self.__update_model_prop__(name, value, False, True)
 
     def __update_model_prop__(
-        self, name, value, skip_auto_save=False, notify_changes=True
+        self,
+        name: str,
+        value: Any,
+        skip_auto_save: bool = False,
+        notify_changes: bool = True,
     ):
         logger.debug(f"Setting model: {name}={value}")
         prev = self.model.__getattribute__(name)
@@ -84,10 +89,10 @@ class Proxy(Generic[T]):
         self.store.commit(self)
 
     def __add_change__(
-        self, prop_name: str, prev_val: Any, new_val: Any, notify_changes=True
-        )-> Change[T]:
+        self, prop_name: str, prev_val: Any, new_val: Any, notify_changes: bool = True
+    ) -> Change[T]:
         logger.debug(f"Adding change: {prop_name}={prev_val} -> {new_val}")
-        change = Change(
+        change = Change[T](
             kind=ChangeKind.UPDATE,
             key=self.__key__,
             prop_name=prop_name,
@@ -112,6 +117,6 @@ class Proxy(Generic[T]):
         if count > 0 and self.store.save_on_change:
             self.commit()
 
-    def __repr__(self):
+    @override
+    def __repr__(self)->str:
         return "ModelProxy(" + self.model.__repr__() + ")"
-
