@@ -1,0 +1,20 @@
+{
+  "include": [
+    "."
+  ],
+  "exclude": [
+    ".venv"
+  ],
+  "reportMissingTypeStubs": false,
+  "reportAny": false,
+  "reportExplicitAny": false,
+  "reportOptionalSubscript": false,
+  "reportOptionalMemberAccess": false,
+  "reportOptionalCall": false,
+  "reportOptionalIterable": false,
+  "reportOptionalContextManager": false,
+  "reportOptionalOperand": false,
+  "reportGeneralTypeIssues": true,
+  "reportUnnecessaryTypeIgnoreComment": true,
+  "reportUnusedImport": true
+}
