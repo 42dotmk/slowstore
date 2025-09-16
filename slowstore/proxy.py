@@ -1,7 +1,7 @@
 from logging import getLogger as get_logger
 import sys
 import slowstore
-from typing import Any, Generic, List, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 from .change import Change, ChangeKind
 
 logger = get_logger("SLOWSTORE")
@@ -33,9 +33,9 @@ class Proxy(Generic[T]):
         self.is_dirty: bool = False
 
         self.__key__: str = key
-        self.__changes__: List[Change] = []
+        self.__changes__: list[Change[T]] = []
 
-    def __getattr__(self, name):
+    def __getattr__(self, name:str)-> Any:  
         if name in __special_fields__:
             logger.debug(f"Getting proxy.{name}")
             return super().__getattribute__(name)
@@ -49,14 +49,13 @@ class Proxy(Generic[T]):
                 func_name = attr.__name__
                 func = cast(Any, attr).__func__
 
-                def wrapper(*args, **kwargs):
+                def wrapper(*args:list[Any] , **kwargs:dict[str, Any]) -> Any:
                     return func(self, *args, **kwargs)
 
                 wrapper.__name__ = func_name
                 return wrapper
 
-    def __setattr__(self, name, value):
-
+    def __setattr__(self, name:str, value:Any)-> None:
         if name in __special_fields__:
             logger.debug(f"Setting proxy: {name}={value}")
             super().__setattr__(name, value)
@@ -86,7 +85,7 @@ class Proxy(Generic[T]):
 
     def __add_change__(
         self, prop_name: str, prev_val: Any, new_val: Any, notify_changes=True
-    ):
+        )-> Change[T]:
         logger.debug(f"Adding change: {prop_name}={prev_val} -> {new_val}")
         change = Change(
             kind=ChangeKind.UPDATE,

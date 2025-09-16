@@ -234,7 +234,7 @@ class Store(Sized, Generic[T]):
                     d["__key__"] = item.__key__
                     if self.save_changes_to_file:
                         d["__changes__"] = [x.__dict__ for x in item.__changes__]
-                    f.write(
+                    _ = f.write(
                         json.dumps(
                             d,
                             indent=2,
