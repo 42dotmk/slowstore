@@ -183,7 +183,7 @@ class Store(Sized, Generic[T]):
         return False
 
     @ensure_loaded
-    def filter(self, filter: Callable[[T], bool]):
+    def filter(self, filter: Callable[[Proxy[T]], bool]):
         """yield all models that satisfy the filter function"""
         for proxy in self.values():
             if filter(cast(T, proxy)):

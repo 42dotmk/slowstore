@@ -1,9 +1,8 @@
 import os
-from slowstore import Change, Store, Proxy
+from slowstore import Store, Proxy
 from pydantic import BaseModel
 import pytest
 from typing import cast
-import shutil
 
 DATA_DIR = "./test_data"
 
@@ -44,7 +43,7 @@ def test_commit_all(store: Store[SampleModel]):
 def test_undo(store: Store[SampleModel]):
     key = "test://1"
     model = store.upsert(key, SampleModel(name="test1"))
-    proxy = cast(Proxy, model)
+    proxy = cast(Proxy[SampleModel], model)
     model.name = "another"
     print(model.name)
     assert model.name == "another"
@@ -53,7 +52,7 @@ def test_undo(store: Store[SampleModel]):
     assert model.name == "test1"
 
 
-def test_query(store):
+def test_query(store:Store[SampleModel]):
     populate_store(store)
     assert len(list(store.filter(lambda v: v.name == "test1"))) == 1
     assert len(list(store.filter(lambda v: v.name == "test10"))) == 0
