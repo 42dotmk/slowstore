@@ -8,6 +8,19 @@ import slowstore
 T = TypeVar("T")
 
 
+def _coerce_datetime(value: Any) -> datetime.datetime:
+    """A datetime for a change: parse an ISO string (as persisted by
+    ``json_default_serializer``), pass a datetime through, else ``now()``."""
+    if isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.datetime.fromisoformat(value)
+        except ValueError:
+            pass
+    return datetime.datetime.now()
+
+
 class ChangeKind:
     ADD: str = "ADD"
     UPDATE: str = "UPDATE"
@@ -53,7 +66,9 @@ class Change(Generic[T]):
             raise ValueError("Invalid change kind")
 
         self.key: str = kwargs["key"]
-        self.date: datetime.datetime = datetime.datetime.now()
+        # honor a provided timestamp (e.g. when reloading persisted changes from
+        # file) so history keeps its original time; default to now() for new ones.
+        self.date: datetime.datetime = _coerce_datetime(kwargs.get("date"))
 
         # Optional actor/identity of who made the change. Only set when provided
         # so stores without an identity provider serialize exactly as before.

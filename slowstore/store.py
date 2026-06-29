@@ -334,7 +334,15 @@ class Store(Sized, Generic[T]):
                     proxy = Proxy[T](store=self, key=key, model=self.cls(**d))
 
                     if self.load_changes_from_file:
-                        proxy.__changes__ = [Change(**x) for x in change_dicts]
+                        # parse changes individually: a malformed entry is skipped
+                        # rather than dropping the whole record from the store.
+                        parsed: list[Change[T]] = []
+                        for x in change_dicts:
+                            try:
+                                parsed.append(Change(**x))
+                            except Exception:
+                                pass
+                        proxy.__changes__ = parsed
 
                     self.__data__[key] = proxy
                 except Exception as e:

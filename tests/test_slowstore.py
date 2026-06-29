@@ -96,6 +96,21 @@ def test_save_changes_on_file(store: Store[SampleModel]):
     kinds = {c.kind for c in proxy.__changes__}
     assert kinds == {"ADD", "UPDATE"}
 
+
+def test_change_dates_preserved_on_reload(store: Store[SampleModel]):
+    key = "dated"
+    model = store.upsert(key, SampleModel(name="a"))
+    model.name = "b"
+    proxy = store.as_proxy(model)
+    original = [c.date for c in proxy.__changes__]
+
+    store.load_changes_from_file = True
+    store.load()
+
+    reloaded = [c.date for c in store.as_proxy(store.get(key)).__changes__]
+    # timestamps survive the round-trip instead of being reset to now()
+    assert reloaded == original
+
 def test_notifications_on_create(store: Store[SampleModel]):
     hook_called = False
     def on_change(_, *changes):
