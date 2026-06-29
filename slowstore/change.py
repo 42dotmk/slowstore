@@ -42,9 +42,9 @@ class Change(Generic[T]):
             self.prev_val: Any = kwargs["prev_val"]
             self.new_val: Any = kwargs["new_val"]
         elif self.kind == ChangeKind.ADD:
-            if "model" not in kwargs:
-                raise ValueError("model is required")
-            self.model = kwargs["model"]
+            # model is optional: the created record lives in its own file, so the
+            # audit entry need not carry it (and reloaded ADD entries omit it).
+            self.model = kwargs.get("model")
         elif self.kind == ChangeKind.DELETE:
             if "model" not in kwargs:
                 raise ValueError("model is required")
@@ -54,6 +54,12 @@ class Change(Generic[T]):
 
         self.key: str = kwargs["key"]
         self.date: datetime.datetime = datetime.datetime.now()
+
+        # Optional actor/identity of who made the change. Only set when provided
+        # so stores without an identity provider serialize exactly as before.
+        actor = kwargs.get("actor")
+        if actor is not None:
+            self.actor: Any = actor
 
     def undo(self, model: "slowstore.Proxy[T]"):
         if self.kind == ChangeKind.UPDATE:

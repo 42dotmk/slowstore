@@ -98,6 +98,7 @@ class Proxy(Generic[T]):
             prop_name=prop_name,
             prev_val=prev_val,
             new_val=new_val,
+            actor=self.store.__identity__(),
         )
         self.store.__changes__.insert(0, change)
         self.__changes__.insert(0, change)

@@ -37,6 +37,13 @@ class Store(Sized, Generic[T]):
         self.ensure_ascii: bool = cast(bool, kwargs.get("ensure_ascii", False))
         self.change_hooks: list[Callable[[Proxy[T], list[Change[T]]], None]] = []
 
+        # Optional identity provider: when set, each change records the actor it
+        # returns (e.g. the current request's user). Left None = anonymous changes,
+        # exactly as before.
+        self.get_identity: Callable[[], Any] | None = cast(
+            Callable[[], Any] | None, kwargs.get("get_identity", None)
+        )
+
         self.key_selector: Callable[["Store[T]", T], str] | None = cast(
             Callable[["Store[T]", T], str] | None, kwargs.get("key_selector", None)
         )
@@ -80,7 +87,12 @@ class Store(Sized, Generic[T]):
         proxy = Proxy[T](self, key, value)
         proxy.is_dirty = True
         self.__data__[key] = proxy
-        change = Change[T](kind=ChangeKind.ADD, key=key, model=value)
+        change = Change[T](kind=ChangeKind.ADD, key=key, model=value,
+                           actor=self.__identity__())
+        # record the creation in the audit trail (mirrors UPDATE/DELETE) so the
+        # record's first change attributes who created it and when.
+        self.__changes__.insert(0, change)
+        proxy.__changes__.insert(0, change)
 
         if self.save_on_change and not skip_autosave:
             self.commit(proxy)
@@ -171,7 +183,8 @@ class Store(Sized, Generic[T]):
     def delete(self, key: str) -> bool:
         if key in self.__data__:
             proxy = self.__data__[key]
-            change = Change[T](kind=ChangeKind.DELETE, key=key, model=proxy.model)
+            change = Change[T](kind=ChangeKind.DELETE, key=key, model=proxy.model,
+                               actor=self.__identity__())
 
             del self.__data__[key]
 
@@ -253,7 +266,13 @@ class Store(Sized, Generic[T]):
                         d = cast(BaseModel, item.model).model_dump(by_alias=True)
                     d["__key__"] = item.__key__
                     if self.save_changes_to_file:
-                        d["__changes__"] = [x.__dict__ for x in item.__changes__]
+                        # ``model`` is the record itself — omit it so ADD entries
+                        # stay compact (the file already holds the model); keep
+                        # kind/key/prop/val/date/actor.
+                        d["__changes__"] = [
+                            {k: v for k, v in x.__dict__.items() if k != "model"}
+                            for x in item.__changes__
+                        ]
                     _ = f.write(
                         json.dumps(
                             d,
@@ -364,6 +383,16 @@ class Store(Sized, Generic[T]):
         if key is None:
             raise ValueError("Could not determine key for value")
         return key
+
+    def __identity__(self) -> Any:
+        """Current actor from the optional ``get_identity`` provider, or None. A
+        failing provider never breaks a write."""
+        if self.get_identity is None:
+            return None
+        try:
+            return self.get_identity()
+        except Exception:
+            return None
 
     def add_change_hook(self, hook: Callable[[Proxy[T], list[Change[T]]], None]):
         self.change_hooks.append(hook)

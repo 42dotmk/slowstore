@@ -91,7 +91,10 @@ def test_save_changes_on_file(store: Store[SampleModel]):
     model2 = store.get(key)
     assert model2 is not None
     proxy = store.as_proxy(model2)
-    assert len(proxy.__changes__) == 1
+    # creation (ADD) + the name update (UPDATE) are both tracked
+    assert len(proxy.__changes__) == 2
+    kinds = {c.kind for c in proxy.__changes__}
+    assert kinds == {"ADD", "UPDATE"}
 
 def test_notifications_on_create(store: Store[SampleModel]):
     hook_called = False
