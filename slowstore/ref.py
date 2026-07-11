@@ -47,9 +47,6 @@ from typing import (
     get_origin,
 )
 
-from pydantic import GetCoreSchemaHandler
-from pydantic_core import core_schema as cs
-
 from .blob import CacheMode
 
 if TYPE_CHECKING:
@@ -176,11 +173,12 @@ class Ref(Generic[T]):
         raise ValueError(f"cannot interpret {v!r} as a Ref")
 
     @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source: Any, handler: GetCoreSchemaHandler
-    ) -> cs.CoreSchema:
+    def __get_pydantic_core_schema__(cls, source: Any, handler: Any) -> Any:
         # validate any Ref/descriptor-dict into a Ref instance and serialize a
-        # Ref back to its compact descriptor.
+        # Ref back to its compact descriptor. Imported lazily so importing
+        # slowstore does not require pydantic until it's actually used.
+        from pydantic_core import core_schema as cs
+
         return cs.no_info_plain_validator_function(
             cls.__from_value__,
             serialization=cs.plain_serializer_function_ser_schema(
@@ -199,9 +197,7 @@ class _ReferenceMeta:
     the ``Ref`` validation/serialization instead of ``T``'s.
     """
 
-    def __get_pydantic_core_schema__(
-        self, source: Any, handler: GetCoreSchemaHandler
-    ) -> cs.CoreSchema:
+    def __get_pydantic_core_schema__(self, source: Any, handler: Any) -> Any:
         return Ref.__get_pydantic_core_schema__(source, handler)
 
 

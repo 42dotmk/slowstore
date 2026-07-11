@@ -29,6 +29,17 @@ from .utils import json_default_serializer
 if TYPE_CHECKING:
     from .store import Store
 
+# A cheap "did the file change" fingerprint: (mtime_ns, size). Coarser than a
+# content hash but a single ``os.stat`` -- ``size`` catches same-mtime edits of a
+# different length, which covers the common hand-edit case.
+def _stat_stamp(path: str) -> "tuple[int, int] | None":
+    """``(mtime_ns, size)`` for ``path``, or ``None`` if it doesn't exist."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
 
 class StorageLayout(ABC):
     """Strategy that persists records and blobs for a store.
@@ -110,6 +121,41 @@ class StorageLayout(ABC):
     def blob_uri(self, key: str, field: str, blob_id: str) -> str:
         """A stable locator for the blob (e.g. a file path). For diagnostics."""
 
+    # -- change detection / freshness ------------------------------------------
+
+    per_record_files: bool = True
+    """Whether each record has its own backing file. ``False`` for collection
+    layouts, where every record shares one file (so a stamp is file-granular)."""
+
+    def __record_locator__(self, key: str) -> str | None:
+        """Filesystem path whose mtime/size fingerprints the record, or ``None``
+        if the layout has no such path. Overridden by the concrete layouts."""
+        return None
+
+    def record_stamp(self, key: str) -> "tuple[int, int] | None":
+        """Current ``(mtime_ns, size)`` for the record's backing file."""
+        loc = self.__record_locator__(key)
+        return _stat_stamp(loc) if loc else None
+
+    def blob_stamp(
+        self, key: str, field: str, blob_id: str
+    ) -> "tuple[int, int] | None":
+        """Current ``(mtime_ns, size)`` for a blob's sidecar file."""
+        if not self.has_blob(key, field, blob_id):
+            return None
+        return _stat_stamp(self.blob_uri(key, field, blob_id))
+
+    def invalidate_cache(self) -> None:
+        """Drop any in-memory cache so the next read hits disk. No-op unless the
+        layout caches (the collection layouts override this)."""
+
+    def load_record(self, key: str) -> dict[str, Any] | None:
+        """Re-read a single record's raw dict from disk (bypassing caches), or
+        ``None`` if it is no longer there. Default re-reads everything; the
+        per-file layouts override to read just the one file."""
+        records, _ = self.load_records()
+        return records.get(key)
+
 
 class _SidecarBlobs(StorageLayout):
     """Blob mixin: each blob is a sidecar ``{directory}/{skey}.{suffix}.bin``.
@@ -175,6 +221,16 @@ class FilePerRecordLayout(_SidecarBlobs):
         if os.path.exists(path):
             os.remove(path)
 
+    def __record_locator__(self, key: str) -> str | None:
+        return self.__record_path__(key)
+
+    def load_record(self, key: str) -> dict[str, Any] | None:
+        path = self.__record_path__(key)
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding=self.encoding) as f:
+            return json.load(f)
+
 
 class _CollectionFileLayout(_SidecarBlobs):
     """Base for layouts that keep every record in a single collection file.
@@ -197,6 +253,23 @@ class _CollectionFileLayout(_SidecarBlobs):
 
     @abstractmethod
     def __write_file__(self, records: dict[str, dict[str, Any]]) -> None: ...
+
+    # every record shares one file, so a stamp fingerprints the whole file.
+    per_record_files: bool = False
+
+    def __record_locator__(self, key: str) -> str | None:
+        return self.__path__
+
+    def invalidate_cache(self) -> None:
+        self.__cache__ = None
+
+    def load_record(self, key: str) -> dict[str, Any] | None:
+        # re-read the file from disk so an external edit is picked up, and
+        # refresh the cache to match.
+        self.__cache__ = None
+        records, _ = self.__read_file__()
+        self.__cache__ = dict(records)
+        return records.get(key)
 
     def __ensure_cache__(self) -> dict[str, dict[str, Any]]:
         if self.__cache__ is None:
@@ -335,6 +408,16 @@ class DirPerObjectLayout(StorageLayout):
         obj_dir = self.__object_dir__(key)
         if os.path.isdir(obj_dir):
             shutil.rmtree(obj_dir)
+
+    def __record_locator__(self, key: str) -> str | None:
+        return self.__record_path__(key)
+
+    def load_record(self, key: str) -> dict[str, Any] | None:
+        path = self.__record_path__(key)
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding=self.encoding) as f:
+            return json.load(f)
 
     # -- blobs (inside the object directory) -----------------------------------
 

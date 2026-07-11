@@ -40,9 +40,11 @@ user.age += 1                               # change is persisted on assignment
 - [Querying](#querying)
 - [Undo / Redo / Dirty](#undo--redo--dirty)
 - [Committing manually](#committing-manually)
+- [Detecting on-disk changes](#detecting-on-disk-changes)
 - [Change hooks & audit trail](#change-hooks--audit-trail)
 - [Blobs (unstructured content)](#blobs-unstructured-content)
 - [References (relationships across collections)](#references-relationships-across-collections)
+- [Model systems (Pydantic, dataclasses, plain objects)](#model-systems-pydantic-dataclasses-plain-objects)
 - [Storage layouts](#storage-layouts)
 - [How data is organized on disk](#how-data-is-organized-on-disk)
 - [When (not) to use it](#when-not-to-use-it)
@@ -71,17 +73,23 @@ user.age += 1                               # change is persisted on assignment
 ## Installation
 
 ```bash
-pip install slowstore
+pip install slowstore            # dataclass / plain-object models
+pip install "slowstore[pydantic]"  # + Pydantic model support
 ```
 
-Slowstore requires **Python 3.10+** and builds on **Pydantic v2**.
+Slowstore requires **Python 3.10+**. **Pydantic is optional**: it's only needed
+if your records are Pydantic models (the default codec for them). Records built
+from `@dataclass` or plain classes need nothing beyond the standard library. The
+Quickstart below uses Pydantic, so install `slowstore[pydantic]` to run it — or
+see [Model systems](#model-systems-pydantic-dataclasses-plain-objects) for the
+dependency-free alternatives.
 
 Using Poetry or uv:
 
 ```bash
-poetry add slowstore
+poetry add "slowstore[pydantic]"
 # or
-uv add slowstore
+uv add "slowstore[pydantic]"
 ```
 
 ## Quickstart
@@ -156,9 +164,11 @@ store = Store[User](
     encoding="utf-8",                # file encoding (default)
     ensure_ascii=False,              # JSON escaping (default)
     layout=None,                     # StorageLayout; defaults to FilePerRecordLayout
+    codec=None,                      # model<->dict Codec; defaults to codec_for(cls)
     registry=None,                   # shared Registry for cross-collection refs
     name=None,                       # collection name (defaults to directory basename)
     get_identity=None,               # callable returning the actor for each change
+    on_conflict="overwrite",         # on-disk conflict policy: overwrite/error/reload
     save_changes_to_file=True,       # write the __changes__ log to disk (default)
     load_changes_from_file=False,    # restore the change log on load
 )
@@ -250,6 +260,49 @@ store.commit(user)          # persist one (or several) records
 store.commit(u1, u2)
 store.commit_all()          # persist everything that's dirty
 ```
+
+## Detecting on-disk changes
+
+A store loads records into memory once. If a file then changes underneath it —
+you hand-edit the JSON, or another process/`Store` writes to the same directory —
+the in-memory copy goes stale, and a naive commit would silently clobber the
+external change. Two mechanisms address this.
+
+**Reload** re-reads from disk on demand:
+
+```python
+store.reload()                 # re-read the whole store, picking up external edits
+store.reload("some_key")       # refresh a single record (drops it if the file is gone)
+store.reload(keep_dirty=True)  # reload, but preserve locally-modified (uncommitted) records
+```
+
+**Conflict detection on write** stamps each record (and blob) with its file's
+`(mtime, size)` at load and after every write, then checks that stamp before
+overwriting. Choose what happens on a conflict via `on_conflict`:
+
+```python
+from slowstore import Store, ConflictPolicy, StaleWriteError
+
+store = Store[User](User, "mydata", key_selector=lambda u: u.name,
+                    on_conflict=ConflictPolicy.ERROR)
+
+try:
+    store.commit(user)
+except StaleWriteError:
+    store.reload("ada")        # someone else wrote it — re-read and reapply
+```
+
+| `on_conflict` | On a detected conflict |
+|---|---|
+| `"overwrite"` *(default)* | Write our version anyway — the historical behavior; nothing changes unless you opt in |
+| `"error"` | Raise `StaleWriteError`, leaving disk untouched |
+| `"reload"` | Discard our version and re-read from disk (disk wins) |
+
+The same policy covers **blobs**: a blob sidecar changed on disk since you read it
+triggers the identical behavior on the next commit. The `(mtime, size)` stamp is
+one `stat` per file — cheap, and `size` catches same-timestamp edits. Note there's
+no cross-file atomicity: a record and its blob are separate files, so each is
+checked independently.
 
 ## Change hooks & audit trail
 
@@ -413,6 +466,56 @@ t.members = t.members + [Ref.to(alan)]       # grow by reassigning
 As with list blobs, assign a **new list** to mutate the field; each element persists as
 a compact `__ref__` descriptor, not an inlined copy of the target.
 
+## Model systems (Pydantic, dataclasses, plain objects)
+
+Your records don't have to be Pydantic models. A store converts models to/from
+disk through a pluggable **codec**, auto-selected from your model class:
+
+| Model class | Codec | Notes |
+|---|---|---|
+| Pydantic v2 `BaseModel` *(default)* | `PydanticCodec` | Full type revival on load (datetimes, enums, nested models, …) |
+| `@dataclass` | `DataclassCodec` | Reconstructed via the dataclass' keyword `__init__` |
+| anything else | `PlainCodec` | Revived via `__new__` + attribute assignment — no particular constructor required |
+
+```python
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional
+from slowstore import Store, BlobRef
+
+@dataclass
+class Note:
+    title: str
+    created: Optional[datetime] = None
+    body: Optional[BlobRef] = None          # blobs/refs work in every backend
+
+notes = Store[Note](Note, "notes", key_selector=lambda n: n.title)  # picks DataclassCodec
+n = notes.set(Note(title="a"))
+n.created = datetime.now()
+n.body = "content..."                       # still auto-wrapped into a BlobRef
+```
+
+**Blobs and references round-trip in all three backends** — they serialize to their
+`__blob__` / `__ref__` descriptors and are rebuilt from those markers on load. The
+dataclass and plain backends additionally revive `datetime` / `date` fields (from ISO
+strings) and nested dataclasses, but — unlike Pydantic — they do **not** coerce other
+rich types; a field annotated as some custom class comes back as the plain JSON value.
+For fields that need auto-wrapping (`n.body = "text"`), annotate them (`body: Optional[BlobRef]`)
+so the codec can discover them.
+
+Pass `codec=` to force a backend, or supply your own `Codec` subclass:
+
+```python
+from slowstore import DataclassCodec
+Store(Note, "notes", codec=DataclassCodec(), key_selector=lambda n: n.title)
+```
+
+> `BlobRef` and `Ref` are plain Python classes — they stay usable inside a
+> Pydantic model through a lazy core-schema hook, but the types themselves don't
+> subclass `BaseModel`. **Pydantic is an optional dependency**: `import slowstore`
+> never imports it, and dataclass/plain stores run without it installed. Install
+> `slowstore[pydantic]` only to use Pydantic models.
+
 ## Storage layouts
 
 How records and blobs are laid out on disk is a pluggable `StorageLayout`. Pass one via
@@ -488,6 +591,8 @@ through its history, persisting the result. See the `Proxy` class for the detail
 - [x] **Blobs** — store unstructured content outside the record JSON, read lazily
 - [x] **Pluggable layouts** — swap how records/blobs are laid out on disk
 - [x] **Non-Pydantic objects** — support for other JSON-serializable objects
+- [x] **On-disk change detection** — `reload()` and `on_conflict` guard against
+  clobbering external edits (records and blobs)
 - [ ] **Partial / lazy load** — load only the records you need
 - [ ] **Transactions**
 - [ ] **Indexes** — speed up queries

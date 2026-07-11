@@ -3,9 +3,9 @@ import shutil
 from logging import getLogger as get_logger
 from typing import Any, Callable, Generic, Literal, Sized, TypeVar, cast
 
-from pydantic import BaseModel
-
 from .blob import BlobRef
+from .codec import Codec, codec_for
+from .errors import ConflictPolicy, StaleWriteError
 from .layout import FilePerRecordLayout, StorageLayout
 from .registry import Registry, default_registry
 from .proxy import (
@@ -39,6 +39,15 @@ class Store(Sized, Generic[T]):
         self.ensure_ascii: bool = cast(bool, kwargs.get("ensure_ascii", False))
         self.change_hooks: list[Callable[[Proxy[T], list[Change[T]]], None]] = []
 
+        # What commit does when a record/blob changed on disk under us. Defaults
+        # to OVERWRITE (the historical clobber-anyway behavior). ``__stamps__``
+        # holds the last-seen on-disk fingerprint per record so a conflict can be
+        # detected before we write.
+        self.on_conflict: str = cast(
+            str, kwargs.get("on_conflict", ConflictPolicy.OVERWRITE)
+        )
+        self.__stamps__: dict[str, Any] = {}
+
         # Optional identity provider: when set, each change records the actor it
         # returns (e.g. the current request's user). Left None = anonymous changes,
         # exactly as before.
@@ -56,6 +65,13 @@ class Store(Sized, Generic[T]):
             StorageLayout, kwargs.get("layout", None) or FilePerRecordLayout()
         )
         self.layout.bind(self)
+
+        # Model <-> dict (de)serialization strategy. Defaults to one auto-selected
+        # from ``cls`` (Pydantic / dataclass / plain); set before any proxy is
+        # built since Proxy discovers its blob/ref fields through the codec.
+        self.codec: Codec = cast(
+            Codec, kwargs.get("codec", None) or codec_for(cls)
+        )
 
         # Collection name (used by cross-collection references). Defaults to the
         # directory's basename so refs read naturally (e.g. "employees").
@@ -219,6 +235,10 @@ class Store(Sized, Generic[T]):
                 for blob in blobs:
                     if isinstance(blob, BlobRef):
                         self.layout.delete_blob(key, fname, blob.id or fname)
+            self.__stamps__.pop(key, None)
+            if not self.layout.per_record_files:
+                # the delete rewrote the shared collection file -> re-baseline.
+                self.__rebaseline_collection__()
             proxy.__changes__.insert(0, change)
             proxy.is_dirty = True
             self.notify_changes(proxy, [change])
@@ -286,6 +306,16 @@ class Store(Sized, Generic[T]):
             if item.store != self:
                 raise ValueError("Item does not belong to this store")
             if item.is_dirty:
+                # optimistic concurrency: if the record's file changed on disk
+                # since we last read/wrote it, don't silently clobber it.
+                if self.__detect_conflict__(item.__key__):
+                    if self.on_conflict == ConflictPolicy.ERROR:
+                        raise StaleWriteError(key=item.__key__, collection=self.name)
+                    if self.on_conflict == ConflictPolicy.RELOAD:
+                        # disk wins: discard our version and re-read this record.
+                        self.__reload_key__(item.__key__)
+                        continue
+                    # OVERWRITE: fall through and clobber, as before.
                 # flush any blob bytes to their sidecars before the record JSON
                 # (which only holds the blob descriptors) is written. A list-blob
                 # field flushes each element and drops sidecars for elements that
@@ -305,9 +335,7 @@ class Store(Sized, Generic[T]):
                         for stale in item.__blob_list_ids__.get(fname, set()) - current_ids:
                             self.layout.delete_blob(item.__key__, fname, stale)
                         item.__blob_list_ids__[fname] = current_ids
-                d = item.model.__dict__
-                if isinstance(item.model, BaseModel):
-                    d = cast(BaseModel, item.model).model_dump(by_alias=True)
+                d = self.codec.to_dict(item.model)
                 d["__key__"] = item.__key__
                 if self.save_changes_to_file:
                     # ``model`` is the record itself — omit it so ADD entries
@@ -319,6 +347,31 @@ class Store(Sized, Generic[T]):
                     ]
                 self.layout.write_record(item.__key__, d)
                 item.is_dirty = False
+                self.__refresh_stamp__(item.__key__)
+
+    def __detect_conflict__(self, key: str) -> bool:
+        """True if the record's file changed on disk since we last saw it."""
+        baseline = self.__stamps__.get(key)
+        if baseline is None:
+            return False  # never loaded/written by us -> no baseline to compare
+        current = self.layout.record_stamp(key)
+        if current is None:
+            return False  # file gone (e.g. deleted externally) -> nothing to clobber
+        return current != baseline
+
+    def __refresh_stamp__(self, key: str) -> None:
+        """Re-baseline after we write, so our own writes never self-conflict."""
+        if self.layout.per_record_files:
+            self.__stamps__[key] = self.layout.record_stamp(key)
+        else:
+            # a collection write rewrote the shared file for every record, so
+            # re-baseline them all to the new file stamp.
+            self.__rebaseline_collection__()
+
+    def __rebaseline_collection__(self) -> None:
+        stamp = self.layout.record_stamp(next(iter(self.__data__), ""))
+        for k in self.__data__:
+            self.__stamps__[k] = stamp
 
     @ensure_loaded
     def __len__(self):
@@ -350,11 +403,61 @@ class Store(Sized, Generic[T]):
     def load(self):
         return self.__json_load__()
 
+    @ensure_loaded
+    def reload(self, key: str | None = None, *, keep_dirty: bool = False):
+        """Re-read record(s) from disk, picking up external changes.
+
+        ``reload("k")`` refreshes a single record (dropping it if the file is
+        gone); ``reload()`` reloads the whole store. With ``keep_dirty=True``,
+        locally-modified (uncommitted) records are preserved instead of being
+        replaced by the on-disk version.
+        """
+        if key is not None:
+            return self.__reload_key__(key)
+        preserved = (
+            {k: p for k, p in self.__data__.items() if p.is_dirty}
+            if keep_dirty
+            else {}
+        )
+        self.layout.invalidate_cache()
+        self.__json_load__()
+        for k, p in preserved.items():
+            # keep the local edits; their baseline stamp stays as freshly loaded.
+            self.__data__[k] = p
+        return self
+
+    def __reload_key__(self, key: str):
+        self.layout.invalidate_cache()
+        d = self.layout.load_record(key)
+        if d is None:
+            # the record no longer exists on disk -> drop it from the store.
+            self.__data__.pop(key, None)
+            self.__stamps__.pop(key, None)
+            return None
+        model_data = {
+            k: v for k, v in d.items() if k not in ("__key__", "__changes__")
+        }
+        proxy = Proxy[T](
+            store=self, key=key, model=self.codec.from_dict(self.cls, model_data)
+        )
+        if self.load_changes_from_file:
+            parsed: list[Change[T]] = []
+            for x in d.get("__changes__", []):
+                try:
+                    parsed.append(Change(**x))
+                except Exception:
+                    pass
+            proxy.__changes__ = parsed
+        self.__data__[key] = proxy
+        self.__stamps__[key] = self.layout.record_stamp(key)
+        return cast(T, proxy)
+
     def __json_load__(self):
         if not os.path.exists(self.directory):
             os.makedirs(self.directory, exist_ok=True)
         self.__data__: dict[str, Any] = {}
         self.__changes__: list[Change[T]] = []
+        self.__stamps__ = {}
         self.loaded = False
         records, errors = self.layout.load_records()
         for locator, d in records.items():
@@ -369,7 +472,9 @@ class Store(Sized, Generic[T]):
                     k: v for k, v in d.items() if k not in ("__key__", "__changes__")
                 }
 
-                proxy = Proxy[T](store=self, key=key, model=self.cls(**model_data))
+                proxy = Proxy[T](
+                    store=self, key=key, model=self.codec.from_dict(self.cls, model_data)
+                )
 
                 if self.load_changes_from_file:
                     # parse changes individually: a malformed entry is skipped
@@ -383,6 +488,7 @@ class Store(Sized, Generic[T]):
                     proxy.__changes__ = parsed
 
                 self.__data__[key] = proxy
+                self.__stamps__[key] = self.layout.record_stamp(key)
             except Exception as e:
                 errors.append((locator, e))
                 # logger.error(f"Error loading {locator}: {e}")

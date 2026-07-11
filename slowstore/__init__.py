@@ -9,8 +9,16 @@ from .layout import (
     DirPerObjectLayout,
 )
 from .blob import BlobRef, CacheMode
+from .errors import ConflictPolicy, StaleWriteError
 from .ref import Ref, Reference
 from .registry import Registry, default_registry
+from .codec import (
+    Codec,
+    PydanticCodec,
+    DataclassCodec,
+    PlainCodec,
+    codec_for,
+)
 
 __all__ = [
     "Store",
@@ -25,8 +33,15 @@ __all__ = [
     "DirPerObjectLayout",
     "BlobRef",
     "CacheMode",
+    "ConflictPolicy",
+    "StaleWriteError",
     "Ref",
     "Reference",
     "Registry",
     "default_registry",
+    "Codec",
+    "PydanticCodec",
+    "DataclassCodec",
+    "PlainCodec",
+    "codec_for",
 ]

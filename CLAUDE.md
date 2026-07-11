@@ -5,10 +5,11 @@ Guidance for Claude Code (and other agents) working in this repository.
 ## What this is
 
 **Slowstore** is a zero-setup, on-disk object store for Python. It maps Pydantic
-models to JSON files on disk, auto-syncs mutations, and keeps a per-record change
-log with undo. It is deliberately **slow and single-threaded** — built for
-prototyping/debugging DX, not production throughput. Published to PyPI as
-`slowstore`. Requires Python 3.10+, Pydantic v2.
+models (or dataclasses / plain classes — see the codec note below) to JSON files
+on disk, auto-syncs mutations, and keeps a per-record change log with undo. It is
+deliberately **slow and single-threaded** — built for prototyping/debugging DX,
+not production throughput. Published to PyPI as `slowstore`. Requires Python
+3.10+; **Pydantic is optional** (`slowstore[pydantic]`, only for Pydantic models).
 
 User-facing docs live in [`README.md`](README.md) — keep it in sync when you
 change public behavior.
@@ -24,12 +25,35 @@ change public behavior.
 | `ref.py` | `Ref` + `Reference[T]` — cross-collection relationships, resolved lazily; `Reference[T]` types the field as `T` for editor autocomplete. |
 | `registry.py` | `Registry` + `default_registry()` — resolves/join references across stores. |
 | `layout.py` | `StorageLayout` and the four built-in layouts. Owns the on-disk path scheme and blob read/write. |
+| `codec.py` | `Codec` + `PydanticCodec`/`DataclassCodec`/`PlainCodec` + `codec_for()`. Owns model↔dict (de)serialization and blob/ref **field discovery**, decoupling the store from any one model system. |
 | `utils.py` | `json_default_serializer` (datetime → ISO, etc.). |
 
 `__init__.py` is the public API surface — anything exported there is public.
 
 ## Architecture & key invariants
 
+- **The model system is pluggable via `codec.py`.** `Store` never touches
+  `model_dump`/`model_fields` directly — it goes through `self.codec` for
+  serialization (`to_dict`/`from_dict`) and blob/ref field discovery
+  (`special_fields`). `codec_for(cls)` auto-selects: Pydantic `BaseModel` →
+  `PydanticCodec` (full type revival), `@dataclass` → `DataclassCodec`, anything
+  else → `PlainCodec` (revives via `__new__` + `setattr`, no `__init__` call).
+  Pass `codec=` to override. Blobs/refs round-trip in all backends via their
+  `__blob__`/`__ref__` markers; the non-Pydantic backends also revive
+  `datetime`/`date` and nested dataclasses but not arbitrary rich types.
+- **`BlobRef` and `Ref` are plain classes** (not `BaseModel`). Their persisted
+  state lives in ordinary attributes; `__to_descriptor__()`/`__from_value__()`
+  do (de)serialization for the codec. They stay usable as fields inside a Pydantic
+  model via a lazy `__get_pydantic_core_schema__` hook (pydantic is imported only
+  when that hook actually runs).
+- **Pydantic is an optional dependency** (`slowstore[pydantic]` extra). No module
+  imports it at load time: `blob.py`/`ref.py` import `pydantic_core` lazily inside
+  the schema hook, and `codec.py` detects Pydantic models by **duck-typing**
+  (`_is_pydantic_model`: has `model_fields` + `model_validate`) rather than
+  `isinstance(cls, BaseModel)`. So `import slowstore` and dataclass/plain stores
+  work with pydantic uninstalled. Keep it that way — don't add a top-level
+  `import pydantic` anywhere; `tests/test_codecs.py::test_pydantic_is_optional`
+  guards this by running in an interpreter with `pydantic*` imports blocked.
 - **Everything is a proxy.** `store.set/get/...` return a `Proxy[T]` (typed as `T`).
   It looks like the model but is not — `proxy.model` is the real Pydantic object.
   `Proxy.__setattr__` routes non-special attribute writes through
@@ -70,13 +94,29 @@ change public behavior.
 - **Keys are sanitized** into filesystem-safe names via `StorageLayout.sanitize`
   (lowercases, replaces unsafe chars with `_`).
 - **Single-threaded, no locking.** Do not add concurrency assumptions.
+- **On-disk change detection (opt-in).** The store never polls for external file
+  changes, but two mechanisms guard against silently clobbering them:
+  - `store.reload()` / `store.reload(key)` re-read from disk (invalidating the
+    collection layout cache); `reload(keep_dirty=True)` preserves uncommitted
+    local edits. `layout.load_record` / `invalidate_cache` back this.
+  - Optimistic concurrency on write: the store stamps each record with its file's
+    `(mtime, size)` in `__stamps__` (see `layout.record_stamp` / `blob_stamp`),
+    captured at load and refreshed after every write (`__refresh_stamp__` —
+    collection layouts re-baseline **all** keys since one file backs them). On
+    commit, `__detect_conflict__` compares the stamp; the `on_conflict` policy
+    (`ConflictPolicy` in `errors.py`: `overwrite` default / `error` / `reload`)
+    decides. Blobs carry their own `_stamp` and run the same check in
+    `BlobRef._flush`. `overwrite` = pre-existing behavior, so this is inert until
+    a caller opts in. No cross-file atomicity (record and blob are separate files).
 
 ## Store construction
 
 `Store(cls, directory, **kwargs)`. Options (all keyword): `key_selector`,
 `save_on_change` (True), `save_on_exit` (True), `load_on_start` (False),
-`encoding` ("utf-8"), `ensure_ascii` (False), `layout`, `registry`, `name`,
-`get_identity`, `save_changes_to_file` (True), `load_changes_from_file` (False).
+`encoding` ("utf-8"), `ensure_ascii` (False), `layout`, `codec`, `registry`,
+`name`, `get_identity`, `on_conflict` (`"overwrite"`),
+`save_changes_to_file` (True),
+`load_changes_from_file` (False). `codec` defaults to `codec_for(cls)`.
 `Store` is a context manager and flushes on exit when `save_on_exit`.
 
 ## Development workflow

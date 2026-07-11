@@ -3,8 +3,8 @@ import sys
 import slowstore
 from typing import Any, Generic, TypeVar, cast, override
 from .change import Change, ChangeKind
-from .blob import BlobRef, field_is_blob, field_is_blob_list
-from .ref import Ref, field_is_reference, field_is_reference_list, _is_record
+from .blob import BlobRef
+from .ref import Ref, _is_record
 
 logger = get_logger("SLOWSTORE")
 
@@ -67,23 +67,15 @@ class Proxy(Generic[T]):
         auto-wrapped on assignment even when the field is currently empty.
         """
         self.__blob_fields__ = []
-        self.__ref_field_names__ = set()
-        self.__blob_field_names__ = set()
-        self.__ref_list_field_names__ = set()
-        self.__blob_list_field_names__ = set()
         model = self.model
 
-        model_fields = getattr(type(model), "model_fields", None)
-        if model_fields:
-            for fname, field_info in model_fields.items():
-                if field_is_reference(field_info):
-                    self.__ref_field_names__.add(fname)
-                    if field_is_reference_list(field_info):
-                        self.__ref_list_field_names__.add(fname)
-                elif field_is_blob(field_info):
-                    self.__blob_field_names__.add(fname)
-                    if field_is_blob_list(field_info):
-                        self.__blob_list_field_names__.add(fname)
+        # which fields are blob/ref is a property of the model *type*; the codec
+        # knows how to read that off whatever model system is in use.
+        special = self.store.codec.special_fields(type(model))
+        self.__ref_field_names__ = set(special.ref)
+        self.__blob_field_names__ = set(special.blob)
+        self.__ref_list_field_names__ = set(special.ref_list)
+        self.__blob_list_field_names__ = set(special.blob_list)
 
         if not hasattr(model, "__dict__"):
             return

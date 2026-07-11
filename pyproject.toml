@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "slowstore"
-version = "2.2.0"
+version = "2.2.1"
 description = "File json storage backend for your collections"
 authors = ["Costa Halicea <costa@codechem.com>"]
 
@@ -13,14 +13,21 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.10"
-pydantic = "^2.8.2"
+# Optional: only needed to use Pydantic models (the default `PydanticCodec`).
+# `pip install slowstore[pydantic]`. Dataclass/plain models need nothing extra.
+pydantic = { version = "^2.8.2", optional = true }
 pytest = "^8.3.4"
+
+[tool.poetry.extras]
+pydantic = ["pydantic"]
 
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"
 debugpy = "^1.8.5"
 ipython = "^8.27.0"
+# installed for the test suite, which exercises the Pydantic backend
+pydantic = "^2.8.2"
 
 [build-system]
 requires = ["poetry-core"]

@@ -9,6 +9,20 @@ from slowstore import BlobRef, CacheMode, Ref, Reference, Registry, Store
 DATA_DIR = "./test_data"
 
 
+def test_blob_and_ref_are_plain_classes():
+    # BlobRef and Ref are plain Python objects, not Pydantic models, but still
+    # serialize through their descriptor hooks.
+    assert not issubclass(BlobRef, BaseModel)
+    assert not issubclass(Ref, BaseModel)
+
+    blob = BlobRef.from_bytes(b"x", content_type="text/plain", id="b")
+    assert blob.__to_descriptor__()["__blob__"] is True
+    assert BlobRef.__from_value__(blob.__to_descriptor__()).id == "b"
+
+    ref = Ref("people", "ada")
+    assert ref.__to_descriptor__()["__ref__"] is True
+
+
 class Doc(BaseModel):
     title: str
     body: Optional[BlobRef] = None

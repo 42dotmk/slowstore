@@ -5,12 +5,14 @@ record's JSON while the actual bytes live in a sidecar managed by the store's
 :class:`~slowstore.layout.StorageLayout`.  Bytes are read lazily on first access
 and, depending on ``cache``, kept in memory or re-read every time.
 
-The descriptor serializes compactly (``model_dump(by_alias=True)``)::
+``BlobRef`` is a plain Python object (not a Pydantic model); it serializes to a
+compact descriptor via :meth:`BlobRef.__to_descriptor__`::
 
     {"__blob__": true, "id": "avatar", "content_type": "image/png",
      "size": 20481, "cache": "reference"}
 
-Runtime context (which store/key/field owns the blob) is *not* serialized; the
+so the store's codec (or Pydantic, via the core-schema hook below) can round-trip
+it. Runtime context (which store/key/field owns the blob) is *not* serialized; the
 owning :class:`~slowstore.proxy.Proxy` injects it via :meth:`_bind` when the
 record is wrapped or the field is (re)assigned.
 """
@@ -21,7 +23,7 @@ import io
 import os
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from .errors import ConflictPolicy, StaleWriteError
 
 if TYPE_CHECKING:
     from .proxy import Proxy
@@ -40,25 +42,38 @@ class CacheMode:
     """Re-read from disk / re-resolve on every access."""
 
 
-class BlobRef(BaseModel):
-    """A lazily-loaded pointer to blob content stored beside the record."""
+class BlobRef:
+    """A lazily-loaded pointer to blob content stored beside the record.
 
-    model_config = ConfigDict(populate_by_name=True)
+    A plain Python object -- the persisted fields (``id``/``content_type``/
+    ``size``/``cache``) are ordinary attributes, and the runtime binding
+    (``_store``/``_key``/``_field``/``_data``/``_pending``/``_stamp``) is never
+    serialized. It can still be used as a field in a Pydantic model thanks to
+    :meth:`__get_pydantic_core_schema__`.
+    """
 
-    # marker so the loader can recognize a blob descriptor in raw JSON.
-    marker: bool = Field(default=True, alias="__blob__")
-    id: str | None = None
-    content_type: str | None = None
-    size: int = 0
-    cache: str = CacheMode.REFERENCE
-
-    # runtime-only binding; excluded from serialization.
-    _proxy: "Proxy[Any] | None" = PrivateAttr(default=None)
-    _store: Any = PrivateAttr(default=None)
-    _key: str | None = PrivateAttr(default=None)
-    _field: str | None = PrivateAttr(default=None)
-    _data: bytes | None = PrivateAttr(default=None)
-    _pending: bool = PrivateAttr(default=False)
+    def __init__(
+        self,
+        id: str | None = None,
+        content_type: str | None = None,
+        size: int = 0,
+        cache: str = CacheMode.REFERENCE,
+    ) -> None:
+        self.id: str | None = id
+        self.content_type: str | None = content_type
+        self.size: int = size
+        self.cache: str = cache
+        # runtime-only binding; never serialized.
+        self._proxy: "Proxy[Any] | None" = None
+        self._store: Any = None
+        self._key: str | None = None
+        self._field: str | None = None
+        self._data: bytes | None = None
+        self._pending: bool = False
+        # ``(mtime_ns, size)`` of the sidecar this ref is based on, captured when
+        # the bytes are read or the record is loaded. Lets ``_flush`` detect a
+        # concurrent external write before overwriting it. ``None`` = no baseline.
+        self._stamp: Any = None
 
     # -- construction ----------------------------------------------------------
 
@@ -118,6 +133,12 @@ class BlobRef(BaseModel):
             # scalar blob-per-field: the field name is a stable id, and keeps the
             # sidecar filename as ``{key}.{field}.bin``.
             self.id = field
+        # Baseline stamp for a lazily-loaded blob (descriptor came from disk, bytes
+        # not yet materialized) so a later _flush can detect a concurrent external
+        # write even if we never read the sidecar. Freshly-created blobs are
+        # ``_pending`` and have no on-disk baseline, so they skip this.
+        if self._stamp is None and self._data is None and not self._pending:
+            self._stamp = self._store.layout.blob_stamp(self._key, field, self.id)
 
     # -- reading ---------------------------------------------------------------
 
@@ -129,6 +150,9 @@ class BlobRef(BaseModel):
         if self._store is None:
             raise RuntimeError("BlobRef is not bound to a store")
         data = self._store.layout.read_blob(self._key, self._field, self.id)
+        # remember what we read so a later _flush can tell if the sidecar was
+        # rewritten by someone else in the meantime.
+        self._stamp = self._store.layout.blob_stamp(self._key, self._field, self.id)
         if self.cache == CacheMode.REFERENCE:
             self._data = data
         return data
@@ -185,11 +209,81 @@ class BlobRef(BaseModel):
 
     def _flush(self) -> None:
         if self._pending and self._data is not None and self._store is not None:
-            self._store.layout.write_blob(self._key, self._field, self.id, self._data)
+            layout = self._store.layout
+            policy = getattr(self._store, "on_conflict", ConflictPolicy.OVERWRITE)
+            # optimistic concurrency: if the sidecar changed since we based our
+            # edit on it, don't silently clobber it -- honor the store's policy.
+            if policy != ConflictPolicy.OVERWRITE and self._stamp is not None:
+                current = layout.blob_stamp(self._key, self._field, self.id)
+                if current is not None and current != self._stamp:
+                    if policy == ConflictPolicy.ERROR:
+                        raise StaleWriteError(
+                            key=self._key,
+                            field=self._field,
+                            collection=getattr(self._store, "name", None),
+                        )
+                    if policy == ConflictPolicy.RELOAD:
+                        # disk wins: drop our pending bytes and re-point at it.
+                        self._data = None
+                        self._pending = False
+                        self._stamp = current
+                        return
+            layout.write_blob(self._key, self._field, self.id, self._data)
             self._pending = False
+            self._stamp = layout.blob_stamp(self._key, self._field, self.id)
             if self.cache != CacheMode.REFERENCE:
                 # don't retain bytes we were told not to cache.
                 self._data = None
+
+    # -- (de)serialization -----------------------------------------------------
+
+    def __repr__(self) -> str:
+        return (
+            f"BlobRef(id={self.id!r}, content_type={self.content_type!r}, "
+            f"size={self.size})"
+        )
+
+    def __to_descriptor__(self) -> "dict[str, Any]":
+        """The compact, JSON-native descriptor stored inside the record."""
+        return {
+            "__blob__": True,
+            "id": self.id,
+            "content_type": self.content_type,
+            "size": self.size,
+            "cache": self.cache,
+        }
+
+    @classmethod
+    def __from_value__(cls, v: Any) -> "BlobRef":
+        """Build a BlobRef from a descriptor dict (or pass one through unchanged)."""
+        if isinstance(v, BlobRef):
+            return v
+        if isinstance(v, dict):
+            return cls(
+                id=v.get("id"),
+                content_type=v.get("content_type"),
+                size=v.get("size", 0),
+                cache=v.get("cache", CacheMode.REFERENCE),
+            )
+        raise ValueError(f"cannot interpret {v!r} as a BlobRef")
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source: Any, handler: Any) -> Any:
+        # lets a BlobRef be a field in a Pydantic model without BlobRef itself
+        # being a Pydantic model: validate a descriptor-dict/BlobRef into a BlobRef
+        # and serialize a BlobRef back to its descriptor. Imported lazily so
+        # importing slowstore does not require pydantic until it's actually used.
+        from pydantic_core import core_schema as cs
+
+        return cs.no_info_plain_validator_function(
+            cls.__from_value__,
+            serialization=cs.plain_serializer_function_ser_schema(
+                lambda v: v.__to_descriptor__(),
+                return_schema=cs.dict_schema(
+                    keys_schema=cs.str_schema(), values_schema=cs.any_schema()
+                ),
+            ),
+        )
 
 
 _LIST_ORIGINS = (list, tuple, set, frozenset)
