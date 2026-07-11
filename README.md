@@ -114,6 +114,116 @@ del store[s2]
 key = "some_key"
 store.delete(key)
 ```
+### Blobs (unstructured content)
+
+Sometimes a record needs to carry content that shouldn't live inline in the JSON
+(images, files, large text). Declare the field as a `BlobRef`: the record JSON keeps
+only a small descriptor, while the bytes live in a **sidecar file** beside the record.
+Bytes are read lazily on first access.
+
+```python
+from slowstore import Store, BlobRef, CacheMode
+from pydantic import BaseModel
+from typing import Optional
+
+class Document(BaseModel):
+    title: str
+    body: Optional[BlobRef] = None
+
+docs = Store[Document](Document, "docs", key_selector=lambda d: d.title)
+d = docs.set(Document(title="intro"))
+
+# attach content; the bytes are flushed to docs/intro.body.bin on commit.
+# assigning str/bytes directly auto-wraps it in a BlobRef:
+d.body = "lots of content..."       # str  -> BlobRef (text/plain)
+d.body = b"lots of content..."      # bytes -> BlobRef
+# or build one explicitly for options like content-type:
+d.body = BlobRef.from_bytes(b"lots of content...", content_type="text/plain")
+d.body = BlobRef.from_path("cover.png")
+d.body = BlobRef.from_text("lots of content...")
+
+# read lazily (only pulled from disk when accessed)
+print(d.body.bytes)          # b"lots of content..."
+d.body.set(b"new content")   # replace content; re-flushed on save
+```
+
+Text sidecars are convenient to read and write directly:
+
+```python
+d.body = BlobRef.from_text("first draft")
+print(d.body.text)                      # "first draft"
+d.body.text = "second draft"            # write convenience; re-flushed on save
+d.body.write_text("v3", encoding="utf-8")
+d.body.read_text(encoding="utf-8")
+```
+
+`cache=CacheMode.REFERENCE` (default) keeps the bytes in memory after the first read;
+`cache=CacheMode.EVERY_TIME` re-reads from disk on every access. Deleting a record also
+deletes its blob sidecars.
+
+### References (relationships across collections)
+
+A reference points at a record in another collection by `(collection, key)` and is
+resolved **lazily** through a shared `Registry` that the participating stores register
+into.
+
+Declare the field as `Reference[Target]`: it is **typed as `Target`** — so your editor
+autocompletes the target's fields — while at runtime it holds a `Ref` that
+**transparently forwards** attribute access to the resolved record. No `.value()` /
+`.get()` needed:
+
+```python
+from slowstore import Store, Ref, Reference, Registry, CacheMode
+from pydantic import BaseModel
+from typing import Optional
+
+class Person(BaseModel):
+    name: str
+
+class Document(BaseModel):
+    title: str
+    author: Optional[Reference[Person]] = None   # typed as Person, stored as a Ref
+
+# passing `registry` is optional — stores without one share a process-wide
+# default registry, so references resolve out of the box.
+registry = Registry()
+people = Store[Person](Person, "people", key_selector=lambda p: p.name, registry=registry)
+docs   = Store[Document](Document, "docs", key_selector=lambda d: d.title, registry=registry)
+
+ada = people.set(Person(name="ada"))
+d = docs.set(Document(title="intro"))
+d.author = ada                               # assign the record directly — auto-wrapped in a Ref
+# equivalently: d.author = Ref.to(ada)       # explicit form (needed for cache=... options)
+
+d.author.name                                # "ada" — resolved on demand, autocompletes
+registry.resolve("people", "ada")            # direct lookup by (collection, key)
+
+# query across collections
+for document, author in registry.join("docs", "author"):
+    print(document.title, "by", author.name)
+```
+
+Prefer the explicit form when you want the raw record or a `None` check: declare the
+field as `Ref` (or `Optional[Ref]`) and call `.get()` / `.value` yourself. As with blobs,
+`cache=CacheMode.REFERENCE` (default) caches the resolved record while
+`cache=CacheMode.EVERY_TIME` re-resolves on each access (always fresh).
+
+> Because attribute access forwards to the target, `Ref`'s own members (`get`, `value`,
+> `collection`, `key`, `cache`) shadow same-named fields on the referenced record — reach
+> those via `.get()`.
+
+### Storage layouts
+
+How records and blobs are laid out on disk is a pluggable `StorageLayout`. The default
+`FilePerRecordLayout` writes one JSON file per record with blob sidecars beside it —
+the historical behavior. Pass a custom layout to change the scheme without touching
+your models:
+
+```python
+from slowstore import Store, FilePerRecordLayout
+store = Store[Document](Document, "docs", layout=FilePerRecordLayout())
+```
+
 ## How is the data organized?
 
 The data is stored in a directory, with each item stored in a separate file. The file name is the key of the item, and the content is the JSON representation of the object.
@@ -134,7 +244,9 @@ At the moment Slowstore works with Pydantic models, but I plan to add support fo
 - [ ] **Transactions**: Add support for transactions
 - [X] **Non-Pydantic objects**: Add support for other types of objects
 - [ ] **Indexes**: Add indexes to the store to speed up queries
-- [ ] **Relationships**: Add support for relationships between objects
+- [X] **Relationships**: Reference records in other collections (`Ref`), resolved lazily through a shared `Registry`
+- [X] **Blobs**: Store unstructured content outside the record JSON (`BlobRef`), read lazily
+- [X] **Pluggable layouts**: Swap how records/blobs are laid out on disk (`StorageLayout`)
 - [ ] Thread locking/Multi-threading support
 - [ ] Object expiration support (so you can use it as a cache and session store)
 - [ ] Performance tests and comparisons

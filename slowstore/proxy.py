@@ -3,6 +3,8 @@ import sys
 import slowstore
 from typing import Any, Generic, TypeVar, cast, override
 from .change import Change, ChangeKind
+from .blob import BlobRef, field_is_blob
+from .ref import Ref, field_is_reference, _is_record
 
 logger = get_logger("SLOWSTORE")
 
@@ -22,6 +24,11 @@ __special_fields__ = [
     "__setattr__",
     "__getattr__",
     "__orig_class__",
+    "__bind_special_fields__",
+    "__blob_fields__",
+    "__ref_field_names__",
+    "__blob_field_names__",
+    "__coerce_special__",
 ]
 
 
@@ -34,6 +41,60 @@ class Proxy(Generic[T]):
 
         self.__key__: str = key
         self.__changes__: list[Change[T]] = []
+        self.__blob_fields__: list[str] = []
+        self.__ref_field_names__: set[str] = set()
+        self.__blob_field_names__: set[str] = set()
+        self.__bind_special_fields__()
+
+    def __bind_special_fields__(self) -> None:
+        """Give the model's BlobRef/Ref fields their I/O context.
+
+        Runs for both freshly-inserted and loaded records (both go through
+        ``__init__``), so lazy blobs/refs know which (store, key, field) they
+        belong to. Also records which fields are *declared* as reference/blob
+        types (from the model's annotations) so plain records/bytes/text can be
+        auto-wrapped on assignment even when the field is currently empty.
+        """
+        self.__blob_fields__ = []
+        self.__ref_field_names__ = set()
+        self.__blob_field_names__ = set()
+        model = self.model
+
+        model_fields = getattr(type(model), "model_fields", None)
+        if model_fields:
+            for fname, field_info in model_fields.items():
+                if field_is_reference(field_info):
+                    self.__ref_field_names__.add(fname)
+                elif field_is_blob(field_info):
+                    self.__blob_field_names__.add(fname)
+
+        if not hasattr(model, "__dict__"):
+            return
+        for name, value in list(vars(model).items()):
+            if isinstance(value, BlobRef):
+                value._bind(self, name)
+                self.__blob_fields__.append(name)
+            elif isinstance(value, Ref):
+                value._bind(self, name)
+
+    def __coerce_special__(self, name: str, value: Any) -> Any:
+        """Auto-wrap a plain assignment into a Ref/BlobRef for special fields.
+
+        ``doc.author = some_record`` -> ``Ref`` to that record; ``doc.body = "x"``
+        / ``doc.body = b"..."`` -> a ``BlobRef``. Values already of the right type
+        (or ``None``) pass through untouched.
+        """
+        if value is None:
+            return value
+        if name in self.__ref_field_names__ and not isinstance(value, Ref):
+            if _is_record(value):
+                return Ref.to(value)
+        elif name in self.__blob_field_names__ and not isinstance(value, BlobRef):
+            if isinstance(value, str):
+                return BlobRef.from_text(value)
+            if isinstance(value, (bytes, bytearray)):
+                return BlobRef.from_bytes(bytes(value))
+        return value
 
     def __getattr__(self, name: str):
         if name in __special_fields__:
@@ -71,12 +132,22 @@ class Proxy(Generic[T]):
         notify_changes: bool = True,
     ):
         logger.debug(f"Setting model: {name}={value}")
+        # auto-wrap plain records/bytes/text assigned to reference/blob fields.
+        value = self.__coerce_special__(name, value)
         prev = self.model.__getattribute__(name)
         if prev == value:
             return None
 
         setattr(self.model, name, value)
         self.is_dirty = True
+
+        # a newly-assigned blob/ref needs its I/O context too.
+        if isinstance(value, BlobRef):
+            value._bind(self, name)
+            if name not in self.__blob_fields__:
+                self.__blob_fields__.append(name)
+        elif isinstance(value, Ref):
+            value._bind(self, name)
 
         change = self.__add_change__(name, prev, value, notify_changes=notify_changes)
 

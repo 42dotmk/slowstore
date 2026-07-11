@@ -1,2 +1,5 @@
 *.pyc
 dist/
+__pycache__/
+test_data/
+.hedlog

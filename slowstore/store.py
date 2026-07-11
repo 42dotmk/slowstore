@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 from logging import getLogger as get_logger
@@ -6,12 +5,15 @@ from typing import Any, Callable, Generic, Literal, Sized, TypeVar, cast
 
 from pydantic import BaseModel
 
+from .blob import BlobRef
+from .layout import FilePerRecordLayout, StorageLayout
+from .registry import Registry, default_registry
 from .proxy import (
     Change,  # pyright: ignore[reportPrivateLocalImportUsage]
     ChangeKind,  # pyright: ignore[reportPrivateLocalImportUsage]
-    Proxy, 
+    Proxy,
 )
-from .utils import ensure_loaded, json_default_serializer
+from .utils import ensure_loaded
 
 T = TypeVar("T")
 
@@ -47,6 +49,27 @@ class Store(Sized, Generic[T]):
         self.key_selector: Callable[["Store[T]", T], str] | None = cast(
             Callable[["Store[T]", T], str] | None, kwargs.get("key_selector", None)
         )
+        # Pluggable on-disk layout. Defaults to the historical one-file-per-record
+        # scheme; ``bind`` reads directory/encoding/ensure_ascii off this store, so
+        # it must run after those are set.
+        self.layout: StorageLayout = cast(
+            StorageLayout, kwargs.get("layout", None) or FilePerRecordLayout()
+        )
+        self.layout.bind(self)
+
+        # Collection name (used by cross-collection references). Defaults to the
+        # directory's basename so refs read naturally (e.g. "employees").
+        self.name: str = cast(
+            str, kwargs.get("name", None) or os.path.basename(os.path.normpath(directory))
+        )
+        # Shared registry for resolving/joining references across stores. When
+        # none is given we fall back to a process-wide default so references
+        # always resolve without extra wiring.
+        self.registry: Registry = cast(
+            Registry, kwargs.get("registry", None) or default_registry()
+        )
+        self.registry.register(self, self.name)
+
         self.load_errors: list[tuple[str, Exception]] = []
         self.loaded: bool = False
         if kwargs.get("load_on_start", False):
@@ -188,7 +211,12 @@ class Store(Sized, Generic[T]):
 
             del self.__data__[key]
 
-            os.remove(f"{self.directory}/{self.__sanitize_file_name__(key)}.json")
+            self.layout.delete_record(key)
+            # cascade: remove the record's blob sidecars too.
+            for fname in proxy.__blob_fields__:
+                blob = getattr(proxy.model, fname, None)
+                if isinstance(blob, BlobRef):
+                    self.layout.delete_blob(key, fname, blob.id or fname)
             proxy.__changes__.insert(0, change)
             proxy.is_dirty = True
             self.notify_changes(proxy, [change])
@@ -256,31 +284,25 @@ class Store(Sized, Generic[T]):
             if item.store != self:
                 raise ValueError("Item does not belong to this store")
             if item.is_dirty:
-                with open(
-                    f"{self.directory}/{self.__sanitize_file_name__(item.__key__)}.json",
-                    "w",
-                    encoding=self.encoding,
-                ) as f:
-                    d = item.model.__dict__
-                    if isinstance(item.model, BaseModel):
-                        d = cast(BaseModel, item.model).model_dump(by_alias=True)
-                    d["__key__"] = item.__key__
-                    if self.save_changes_to_file:
-                        # ``model`` is the record itself — omit it so ADD entries
-                        # stay compact (the file already holds the model); keep
-                        # kind/key/prop/val/date/actor.
-                        d["__changes__"] = [
-                            {k: v for k, v in x.__dict__.items() if k != "model"}
-                            for x in item.__changes__
-                        ]
-                    _ = f.write(
-                        json.dumps(
-                            d,
-                            indent=2,
-                            default=json_default_serializer,
-                            ensure_ascii=self.ensure_ascii,
-                        )
-                    )
+                # flush any blob bytes to their sidecars before the record JSON
+                # (which only holds the blob descriptors) is written.
+                for fname in item.__blob_fields__:
+                    blob = getattr(item.model, fname, None)
+                    if isinstance(blob, BlobRef):
+                        blob._flush()
+                d = item.model.__dict__
+                if isinstance(item.model, BaseModel):
+                    d = cast(BaseModel, item.model).model_dump(by_alias=True)
+                d["__key__"] = item.__key__
+                if self.save_changes_to_file:
+                    # ``model`` is the record itself — omit it so ADD entries
+                    # stay compact (the file already holds the model); keep
+                    # kind/key/prop/val/date/actor.
+                    d["__changes__"] = [
+                        {k: v for k, v in x.__dict__.items() if k != "model"}
+                        for x in item.__changes__
+                    ]
+                self.layout.write_record(item.__key__, d)
                 item.is_dirty = False
 
     @ensure_loaded
@@ -320,34 +342,33 @@ class Store(Sized, Generic[T]):
         self.__data__: dict[str, Any] = {}
         self.__changes__: list[Change[T]] = []
         self.loaded = False
-        for filename in os.listdir(self.directory):
-            with open(f"{self.directory}/{filename}", "r", encoding=self.encoding) as f:
-                try:
-                    d = json.load(f)
-                    key: str = d["__key__"]
-                    change_dicts = d.get("__changes__", [])
+        for locator in self.layout.record_locators():
+            try:
+                d = self.layout.read_record(locator)
+                key: str = d["__key__"]
+                change_dicts = d.get("__changes__", [])
 
-                    del d["__key__"]
-                    if "__changes__" in d:
-                        del d["__changes__"]
+                del d["__key__"]
+                if "__changes__" in d:
+                    del d["__changes__"]
 
-                    proxy = Proxy[T](store=self, key=key, model=self.cls(**d))
+                proxy = Proxy[T](store=self, key=key, model=self.cls(**d))
 
-                    if self.load_changes_from_file:
-                        # parse changes individually: a malformed entry is skipped
-                        # rather than dropping the whole record from the store.
-                        parsed: list[Change[T]] = []
-                        for x in change_dicts:
-                            try:
-                                parsed.append(Change(**x))
-                            except Exception:
-                                pass
-                        proxy.__changes__ = parsed
+                if self.load_changes_from_file:
+                    # parse changes individually: a malformed entry is skipped
+                    # rather than dropping the whole record from the store.
+                    parsed: list[Change[T]] = []
+                    for x in change_dicts:
+                        try:
+                            parsed.append(Change(**x))
+                        except Exception:
+                            pass
+                    proxy.__changes__ = parsed
 
-                    self.__data__[key] = proxy
-                except Exception as e:
-                    errors.append((filename, e))
-                    # logger.error(f"Error loading {filename}: {e}")
+                self.__data__[key] = proxy
+            except Exception as e:
+                errors.append((locator, e))
+                # logger.error(f"Error loading {locator}: {e}")
         self.load_errors = errors
         if len(errors) > 0:
             logger.error(
@@ -421,22 +442,8 @@ class Store(Sized, Generic[T]):
                 hook(proxy, changes)
 
     def __sanitize_file_name__(self, name: str | int):
-        name = str(name)
-
-        return (
-            name.replace("/", "_")
-            .replace("\\", "_")
-            .replace(":", "_")
-            .replace(" ", "_")
-            .replace(".", "_")
-            .replace("!", "_")
-            .replace("?", "_")
-            .replace("&", "_")
-            .replace(";", "_")
-            .replace("|", "_")
-            .replace("/", "_")
-            .lower()
-        )
+        # kept for backwards compatibility; the layout now owns key sanitization.
+        return self.layout.sanitize(name)
 
     def __enter__(self):
         return self
