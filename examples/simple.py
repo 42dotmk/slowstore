@@ -1,5 +1,12 @@
-from slowstore import Store
+import shutil
+
 from pydantic import BaseModel
+
+from slowstore import Store
+
+# start clean so the example is repeatable
+shutil.rmtree("mydata", ignore_errors=True)
+
 
 class SampleModel(BaseModel):
     name: str
@@ -8,21 +15,23 @@ class SampleModel(BaseModel):
     def birthday(self):
         self.age += 1
 
-# Create the store to save data under "mydata" directory
-store = Store[SampleModel](SampleModel, "mydata", key_selector=lambda store, model: model.name)
 
-# This is how you create an object in the store, 
-# Note that the parameters are the same as the SampleModel needs
-dennis = store.create(name="denis", age=32)
+# Create the store to save data under the "mydata" directory. `key_selector`
+# derives the key each object is tracked/stored by (here, its name).
+store = Store[SampleModel](SampleModel, "mydata", key_selector=lambda model: model.name)
 
-# immediately after previous line is evaluated,
-# you will have a json file (mydata/dennis.json) represening this object
+# Add an object to the store. `set` returns a tracked proxy that behaves like the
+# model but auto-syncs changes to disk.
+dennis = store.set(SampleModel(name="denis", age=32))
+
+# immediately after the previous line, there is a json file (mydata/denis.json)
+# representing this object.
 
 dennis.name = "DENIS"
-# here the name in the json will also change from "dennis" to "DENIS"
-# also the associated change will be tracked so you can further inspect if needed.
+# the name in the json also changes from "denis" to "DENIS", and the change is
+# tracked so you can inspect it later.
 
 dennis.birthday()
-# will also trigger another change in the age field and it will be reflected in the json file. 
-print(dennis.model)
+# triggers another change on the age field, also reflected in the json file.
 
+print(dennis.model)
