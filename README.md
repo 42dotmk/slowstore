@@ -1,17 +1,90 @@
 # Slowstore
-Easy to use, object store that stores your objects as JSON on disk.
-It directly maps your python objects to JSON and every object is auto synced to disk (by default). The on-disk layout is pluggable — one file per record (default), a single file per collection, or a directory per object (see [Storage layouts](#storage-layouts)). 
-It is designed to be easy to plug into your program, without need of servers, connection strings, or any setup just set the directory where you would like to store your files.
 
-**Slowstore*  it is intended to be used for exploration and debugging of my program behaviour.
+[![PyPI version](https://img.shields.io/pypi/v/slowstore.svg)](https://pypi.org/project/slowstore/)
+[![Python versions](https://img.shields.io/pypi/pyversions/slowstore.svg)](https://pypi.org/project/slowstore/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-#### Installation
+**A zero-setup, on-disk object store for Python.** Slowstore maps your Pydantic
+models straight to JSON files, auto-syncs every change to disk, and keeps a full
+undo/redo history — no server, no connection string, no schema migration. Point
+it at a directory and go.
+
+> ⚠️ Slowstore is deliberately **slow** and single-threaded. It exists to give you
+> a great developer experience while exploring, prototyping, and debugging — not
+> to be a production database. See [When (not) to use it](#when-not-to-use-it).
+
+```python
+from slowstore import Store
+from pydantic import BaseModel
+
+class User(BaseModel):
+    name: str
+    age: int = 0
+
+store = Store[User](User, "mydata", key_selector=lambda u: u.name)
+
+user = store.set(User(name="ada", age=36))  # writes mydata/ada.json immediately
+user.age += 1                               # change is persisted on assignment
+```
+
+---
+
+## Table of contents
+
+- [Why Slowstore?](#why-slowstore)
+- [Installation](#installation)
+- [Quickstart](#quickstart)
+- [Core concepts](#core-concepts)
+- [Configuring the store](#configuring-the-store)
+- [Reading & writing records](#reading--writing-records)
+- [Querying](#querying)
+- [Undo / Redo / Dirty](#undo--redo--dirty)
+- [Committing manually](#committing-manually)
+- [Change hooks & audit trail](#change-hooks--audit-trail)
+- [Blobs (unstructured content)](#blobs-unstructured-content)
+- [References (relationships across collections)](#references-relationships-across-collections)
+- [Storage layouts](#storage-layouts)
+- [How data is organized on disk](#how-data-is-organized-on-disk)
+- [When (not) to use it](#when-not-to-use-it)
+- [How it works](#how-it-works)
+- [Feature status & roadmap](#feature-status--roadmap)
+- [Development](#development)
+- [License](#license)
+
+---
+
+## Why Slowstore?
+
+- **No setup.** No database server, no ORM configuration, no connection string —
+  just a directory on disk.
+- **Transparent persistence.** Mutating a tracked object (`user.age += 1`) writes
+  it to disk automatically. Turn this off and commit manually when you prefer.
+- **Human-readable storage.** Everything is plain JSON you can open, diff, and
+  edit by hand.
+- **Built-in history.** Every record carries its own change log with undo/redo,
+  dirty tracking, and an optional actor/audit trail.
+- **Pluggable on-disk layout.** One file per record (default), one file per
+  collection, or one directory per object — swap it without touching your models.
+- **Blobs & relationships.** Keep large/binary content out of the JSON, and link
+  records across collections with lazily-resolved references.
+
+## Installation
+
 ```bash
 pip install slowstore
 ```
 
-## Usage
-You can create a new Slowstore instance by calling the constructor:
+Slowstore requires **Python 3.10+** and builds on **Pydantic v2**.
+
+Using Poetry or uv:
+
+```bash
+poetry add slowstore
+# or
+uv add slowstore
+```
+
+## Quickstart
 
 ```python
 from slowstore import Store
@@ -20,107 +93,189 @@ from pydantic import BaseModel
 class SampleModel(BaseModel):
     name: str
     age: int = 0
+
     def birthday(self):
         self.age += 1
 
-store = Store[SampleModel](SampleModel, "mydata", key_selector=lambda x: x.name)  # `key_selector` function is used to compose the key by which the object is tracked in the store)
+# `key_selector` derives the key each object is tracked/stored by.
+store = Store[SampleModel](SampleModel, "mydata", key_selector=lambda m: m.name)
+
 m = SampleModel(name="john", age=30)
 dennis = store.set(SampleModel(name="denis", age=32))  # returns a tracked proxy
 store.set(m)
-dennis.name = "DENIS"  # here the name in the json will also change from "dennis" to "DENIS"
-dennis.birthday()      # will also trigger another change in the age field and it will be reflected in the json file. 
+
+dennis.name = "DENIS"   # the value in denis.json changes from "denis" to "DENIS"
+dennis.birthday()       # bumps age -> also reflected in the JSON file
 ```
-`mydata/dennis.json` after running this program will look like:
+
+`mydata/denis.json` after running this program looks like:
+
 ```json
 {
   "name": "DENIS",
   "age": 33,
   "__key__": "denis",
   "__changes__": [
-    {
-      "kind": "UPDATE",
-      "prop_name": "age",
-      "prev_val": 32,
-      "new_val": 33,
-      "key": "denis",
-      "date": "2024-08-28T19:04:12.840353"
-    },
-    {
-      "kind": "UPDATE",
-      "prop_name": "name",
-      "prev_val": "denis",
-      "new_val": "DENIS",
-      "key": "denis",
-      "date": "2024-08-28T19:04:12.840216"
-    },
-    {
-      "kind": "ADD",
-      "key": "denis",
-      "date": "2024-08-28T19:04:12.840100"
-    }
+    { "kind": "UPDATE", "prop_name": "age",  "prev_val": 32, "new_val": 33, "key": "denis", "date": "2024-08-28T19:04:12.840353" },
+    { "kind": "UPDATE", "prop_name": "name", "prev_val": "denis", "new_val": "DENIS", "key": "denis", "date": "2024-08-28T19:04:12.840216" },
+    { "kind": "ADD", "key": "denis", "date": "2024-08-28T19:04:12.840100" }
   ]
 }
 ```
-`Store` tracks what happened in your small program at all times.
-You can toggle the `save_on_change` flat at any time after the store is created, 
-or you can also set the `save_on_change` flag to your liking in the constructor of the `store`
+
+Slowstore tracks what happened in your program at all times. A runnable version of
+this example lives in [`examples/simple.py`](examples/simple.py); blobs and
+references are demonstrated in [`examples/blobs_and_refs.py`](examples/blobs_and_refs.py).
+
+## Core concepts
+
+- **Store** — a typed, dictionary-like collection of records of a single model
+  type, backed by a directory on disk.
+- **Proxy** — `store.set(...)` and the getters return a *proxy* that wraps your
+  model. It behaves like the model (attribute access, method calls) but
+  intercepts mutations to persist them and record history. Reach the underlying
+  model with `proxy.model`.
+- **Change** — every add/update/delete is recorded as a `Change` on the record's
+  `__changes__` log, powering undo and the audit trail.
+- **Key** — every record is stored under a string key. Provide a `key_selector`
+  so `store.set(obj)` can derive the key, or use the explicit
+  `insert`/`update`/`upsert(key, obj)` methods.
+
+## Configuring the store
+
+All options are keyword arguments to the constructor:
 
 ```python
-store.save_on_change = False 
+store = Store[User](
+    User,
+    "mydata",
+    key_selector=lambda u: u.name,   # derive the key from the object
+    save_on_change=True,             # persist on every mutation (default)
+    save_on_exit=True,               # flush on `with` block / context exit (default)
+    load_on_start=False,             # eagerly load the directory in __init__
+    encoding="utf-8",                # file encoding (default)
+    ensure_ascii=False,              # JSON escaping (default)
+    layout=None,                     # StorageLayout; defaults to FilePerRecordLayout
+    registry=None,                   # shared Registry for cross-collection refs
+    name=None,                       # collection name (defaults to directory basename)
+    get_identity=None,               # callable returning the actor for each change
+    save_changes_to_file=True,       # write the __changes__ log to disk (default)
+    load_changes_from_file=False,    # restore the change log on load
+)
 ```
 
-After this code is executed, you will need to run `store.commit(some_model)` or store.commit_all() in order to persist the changes. 
-
-### Commit the changes to the store
-If the store's `save_on_change` flag is not set to `True`, you can commit the changes manually.
-```python
-store.commit(s1)
-store.commit(s2)
-# or just commit all changes
-store.commit_all() 
-```
-
-### Undo/Redo
-
-Every slowstore item is a proxy object around the object you added to the store. This allows you to access the object's attributes and adds undo/redo/dirty functionality
-
-```python
-s1.undo()
-s1.redo()
-```
-
-### Querying the store
+Toggle behaviour at runtime, too:
 
 ```python
-# get all items, returns an iterator
-all_items = store.all()
-
-# yield all items that match a condition
-filtered_items = store.filter(lambda x: x.age > 30)
-
-# get the first item that matches a condition
-first_item = store.first(lambda x: x.age > 30)
+store.save_on_change = False   # switch to manual commits
 ```
 
-### Check if some object or it's key is in the store
+Slowstore is also a context manager. When `save_on_exit=True` (the default), any
+pending changes are flushed when the block ends:
 
 ```python
-if s2 in store:
-    print("s2 is in store")
-else:
-    print("s2 is not in store")
+with Store[User](User, "mydata", key_selector=lambda u: u.name) as store:
+    store.set(User(name="grace"))
+# changes are committed here
 ```
 
-### Deleting items
-Any of the following will delete the item from the store, along with the file that contains the data
+## Reading & writing records
 
 ```python
-store.delete(s1)
-del store[s2]
-key = "some_key"
-store.delete(key)
+store.set(obj)                  # upsert using key_selector, returns a proxy
+store.insert("k", obj)          # add; raises if key "k" already exists
+store.update("k", obj)          # update an existing record; raises if missing
+store.upsert("k", obj)          # insert or update by explicit key
+store.add_range([o1, o2, o3])   # bulk upsert (committed together)
+
+store.get("k")                  # proxy (typed as the model), or None
+store.get_model("k")            # the raw model (no proxy), or None
+store.get_proxy("k")            # the proxy object, or None
+store["k"]                      # same as get("k")
+store["k"] = obj                # same as upsert("k", obj)
 ```
-### Blobs (unstructured content)
+
+Deleting a record also removes its file(s) on disk (and any blob sidecars):
+
+```python
+store.delete("k")
+store.delete(proxy)             # accepts a proxy or a key
+del store["k"]
+
+if obj in store:                # membership by proxy or key
+    ...
+```
+
+## Querying
+
+```python
+store.values()                        # iterator of all records (as proxies)
+store.raw_values()                    # iterator of the underlying raw models
+store.keys()                          # the record keys
+len(store)                            # number of records
+for record in store: ...              # iterate records
+
+store.filter(lambda x: x.age > 30)    # yield records matching a predicate
+store.first(lambda x: x.age > 30)     # first match, or None
+
+# bulk mutate everything matching a predicate (persists per save_on_change)
+store.update_where(lambda x: x.age > 30, lambda x: setattr(x, "age", 30))
+```
+
+## Undo & dirty tracking
+
+Because every record is a proxy over your object, it carries its own change log
+and can roll itself back:
+
+```python
+user.is_dirty          # True if there are uncommitted changes
+user.__reset__(1)      # undo the last change
+user.__reset__(3)      # undo the last 3 changes
+user.__reset__()       # undo the entire recorded history
+```
+
+`__reset__(n)` replays the recorded changes in reverse, restoring previous values
+(and re-creating/removing records for undone deletes/adds). Each `Change` also
+supports `undo`/`redo` individually if you walk `proxy.__changes__` yourself.
+
+## Committing manually
+
+With `save_on_change=False`, mutations are held in memory until you commit:
+
+```python
+store.save_on_change = False
+user.age += 1
+
+store.commit(user)          # persist one (or several) records
+store.commit(u1, u2)
+store.commit_all()          # persist everything that's dirty
+```
+
+## Change hooks & audit trail
+
+Subscribe to changes as they happen — handy for logging, cache invalidation, or
+syncing to another system:
+
+```python
+def on_change(proxy, changes):
+    for c in changes:
+        print(c.kind, c.key, getattr(c, "prop_name", None))
+
+store.add_change_hook(on_change)
+store.remove_change_hook(on_change)
+store.clear_change_hooks()
+```
+
+To attribute each change to a user/actor, pass `get_identity` — its return value
+is stored on every `Change` as `actor`:
+
+```python
+store = Store[User](User, "mydata",
+                    key_selector=lambda u: u.name,
+                    get_identity=lambda: current_user())
+```
+
+## Blobs (unstructured content)
 
 Sometimes a record needs to carry content that shouldn't live inline in the JSON
 (images, files, large text). Declare the field as a `BlobRef`: the record JSON keeps
@@ -167,7 +322,12 @@ d.body.read_text(encoding="utf-8")
 `cache=CacheMode.EVERY_TIME` re-reads from disk on every access. Deleting a record also
 deletes its blob sidecars.
 
-### References (relationships across collections)
+> **On-disk name.** A blob's filename is derived from the record key and field name
+> (e.g. `docs/intro.body.bin`), not a name you pass. `from_path("cover.png")` reads
+> the file's bytes but does not adopt its name. See
+> [Storage layouts](#storage-layouts) for how each layout names blob files.
+
+## References (relationships across collections)
 
 A reference points at a record in another collection by `(collection, key)` and is
 resolved **lazily** through a shared `Registry` that the participating stores register
@@ -218,7 +378,7 @@ field as `Ref` (or `Optional[Ref]`) and call `.get()` / `.value` yourself. As wi
 > `collection`, `key`, `cache`) shadow same-named fields on the referenced record — reach
 > those via `.get()`.
 
-### Storage layouts
+## Storage layouts
 
 How records and blobs are laid out on disk is a pluggable `StorageLayout`. Pass one via
 `layout=` to change the scheme without touching your models:
@@ -243,55 +403,78 @@ high write throughput. All layouts support blobs and reload identically; you can
 layouts by pointing a new store at a fresh directory (there is no automatic migration
 between on-disk formats).
 
-## How is the data organized?
+## How data is organized on disk
 
 By default each record is a JSON file named after its key, inside the store's directory
 (the `FilePerRecordLayout`). This is configurable — see [Storage layouts](#storage-layouts)
 for single-file (`collection.json` / `collection.jsonl`) and directory-per-object schemes.
 Unstructured content is stored outside the record JSON as [blobs](#blobs-unstructured-content),
 and [references](#references-relationships-across-collections) link records across
-collections.
+collections. Record keys are sanitized into filesystem-safe filenames.
 
-## Features
+## When (not) to use it
 
-At the moment Slowstore works with Pydantic models, but I plan to add support for other types of objects that are serializable to JSON.
+**Great for:**
 
-- [X] **Save on change**: Set the store to save the data every time a property is changed
-- [X] **Undo/Redo**: Undo and redo changes to the object
-- [X] **Dirty**: Check if the object has been changed
-- [X] **Filtering**: Filter/Query the items in the store
-- [X] **Deleting**: Delete items from the store
-- [X] **Commit**: Commit changes to the store
-- [ ] **Partial load**: Load only the items you need, and lazy load the rest
-- [ ] **Transactions**: Add support for transactions
-- [X] **Non-Pydantic objects**: Add support for other types of objects
-- [ ] **Indexes**: Add indexes to the store to speed up queries
-- [X] **Relationships**: Reference records in other collections (`Ref`), resolved lazily through a shared `Registry`
-- [X] **Blobs**: Store unstructured content outside the record JSON (`BlobRef`), read lazily
-- [X] **Pluggable layouts**: Swap how records/blobs are laid out on disk (`StorageLayout`)
-- [ ] Thread locking/Multi-threading support
-- [ ] Object expiration support (so you can use it as a cache and session store)
-- [ ] Performance tests and comparisons
-- [ ] **Custom serialization**: Add support for custom serialization/deserialization
+- Prototypes, spikes, and exploratory scripts
+- Debugging program behavior with a human-readable, diffable data trail
+- Small CLIs, notebooks, and local tools where a database is overkill
+- Fixtures and test data you want to inspect by hand
 
+**Not for:**
+
+- High write throughput or large datasets (every change is a file write)
+- Multi-threaded or multi-process concurrent access (no locking)
+- Anything performance-sensitive or safety-critical
+
+Slowstore is **slow** by design, and single-threaded. It optimizes for developer
+experience, not throughput.
 
 ## How it works
 
-The slowtore instance behaves like a dictionary of objects you added to it. Instead of storing the object it creates a proxy object that stores the object's state and the changes you made to it. 
+A Slowstore instance behaves like a dictionary of the objects you add to it. Instead of
+storing the object directly, it wraps it in a **proxy** that records the object's state
+and the changes made to it.
 
-When you commit the changes, the proxy object is updated with the new state, and the changes are saved to disk.
+When you commit, the proxy's current state is serialized to disk along with its change
+log. `__reset__` replays those recorded changes in reverse to move the proxy back
+through its history, persisting the result. See the `Proxy` class for the details.
 
-When you undo/redo the changes, the proxy object is updated with the previous state, and the changes are saved to disk.
+## Feature status & roadmap
 
-Check the ModelProxy class for more details.
+- [x] **Save on change** — persist automatically on every mutation
+- [x] **Undo** — roll a record back through its history (`__reset__`)
+- [x] **Dirty tracking** — know whether a record has uncommitted changes
+- [x] **Filtering / querying** — `filter`, `first`, `update_where`
+- [x] **Deleting** — remove records and their files
+- [x] **Commit** — manual `commit` / `commit_all`
+- [x] **Change hooks & audit trail** — subscribe to changes; attribute an actor
+- [x] **Relationships** — cross-collection `Ref` resolved via a shared `Registry`
+- [x] **Blobs** — store unstructured content outside the record JSON, read lazily
+- [x] **Pluggable layouts** — swap how records/blobs are laid out on disk
+- [x] **Non-Pydantic objects** — support for other JSON-serializable objects
+- [ ] **Partial / lazy load** — load only the records you need
+- [ ] **Transactions**
+- [ ] **Indexes** — speed up queries
+- [ ] **Thread locking / multi-threading**
+- [ ] **Object expiration** — use as a cache / session store
+- [ ] **Custom serialization** hooks
+- [ ] **Performance tests & comparisons**
 
-## Important
+## Development
 
-Slow store is **slow** and it is not intended to be used in multithreaded contexts. It's primarily created to provide a good DX while working on a certain feature.
+```bash
+git clone https://github.com/42dotmk/slowstore
+cd slowstore
+poetry install          # install dependencies
+poetry run pytest -v    # run the test suite  (or: make test)
+```
+
+Handy `make` targets: `make test`, `make build`, `make publish`.
+
+Contributions are welcome — please open an issue to discuss substantial changes
+first, and make sure `poetry run pytest` passes before opening a pull request.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-
-
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
