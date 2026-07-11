@@ -338,21 +338,23 @@ class Store(Sized, Generic[T]):
     def __json_load__(self):
         if not os.path.exists(self.directory):
             os.makedirs(self.directory, exist_ok=True)
-        errors: list[tuple[str, Exception]]= []
         self.__data__: dict[str, Any] = {}
         self.__changes__: list[Change[T]] = []
         self.loaded = False
-        for locator in self.layout.record_locators():
+        records, errors = self.layout.load_records()
+        for locator, d in records.items():
             try:
-                d = self.layout.read_record(locator)
                 key: str = d["__key__"]
                 change_dicts = d.get("__changes__", [])
 
-                del d["__key__"]
-                if "__changes__" in d:
-                    del d["__changes__"]
+                # build the model input without mutating ``d`` -- collection
+                # layouts hand back dicts they keep cached, so removing keys from
+                # ``d`` here would corrupt their in-memory copy.
+                model_data = {
+                    k: v for k, v in d.items() if k not in ("__key__", "__changes__")
+                }
 
-                proxy = Proxy[T](store=self, key=key, model=self.cls(**d))
+                proxy = Proxy[T](store=self, key=key, model=self.cls(**model_data))
 
                 if self.load_changes_from_file:
                     # parse changes individually: a malformed entry is skipped

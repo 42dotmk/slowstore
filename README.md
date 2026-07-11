@@ -214,15 +214,28 @@ field as `Ref` (or `Optional[Ref]`) and call `.get()` / `.value` yourself. As wi
 
 ### Storage layouts
 
-How records and blobs are laid out on disk is a pluggable `StorageLayout`. The default
-`FilePerRecordLayout` writes one JSON file per record with blob sidecars beside it —
-the historical behavior. Pass a custom layout to change the scheme without touching
-your models:
+How records and blobs are laid out on disk is a pluggable `StorageLayout`. Pass one via
+`layout=` to change the scheme without touching your models:
 
 ```python
-from slowstore import Store, FilePerRecordLayout
-store = Store[Document](Document, "docs", layout=FilePerRecordLayout())
+from slowstore import Store, JsonlCollectionLayout
+store = Store[Document](Document, "docs", layout=JsonlCollectionLayout())
 ```
+
+Built-in layouts:
+
+| Layout | On disk | Notes |
+|---|---|---|
+| `FilePerRecordLayout` *(default)* | `{key}.json` per record, `{key}.{field}.bin` blob sidecars | Historical behavior; easy to inspect per record |
+| `JsonCollectionLayout` | one `collection.json` (object keyed by record key), blob sidecars | Whole collection in a single file |
+| `JsonlCollectionLayout` | one `collection.jsonl`, one record per line, blob sidecars | Line-delimited JSON — cheap to scan/append |
+| `DirPerObjectLayout` | one directory per record (`{key}/record.json`) with that record's blobs inside (`{key}/{field}.bin`) | Each object self-contained; deleting a record drops its whole directory |
+
+The collection layouts (`Json`/`Jsonl`) keep every record in one file, so a write is a
+read-modify-write of that file — fine for Slowstore's debugging use, but not built for
+high write throughput. All layouts support blobs and reload identically; you can switch
+layouts by pointing a new store at a fresh directory (there is no automatic migration
+between on-disk formats).
 
 ## How is the data organized?
 
