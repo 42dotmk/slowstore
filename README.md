@@ -1,6 +1,6 @@
 # Slowstore
-Easy to use, object store that stores your objects as JSON files(per object). 
-It directly maps your python objects to JSON files and every object is auto synced to its coresponding JSON file (by default). 
+Easy to use, object store that stores your objects as JSON on disk.
+It directly maps your python objects to JSON and every object is auto synced to disk (by default). The on-disk layout is pluggable — one file per record (default), a single file per collection, or a directory per object (see [Storage layouts](#storage-layouts)). 
 It is designed to be easy to plug into your program, without need of servers, connection strings, or any setup just set the directory where you would like to store your files.
 
 **Slowstore*  it is intended to be used for exploration and debugging of my program behaviour.
@@ -25,7 +25,7 @@ class SampleModel(BaseModel):
 
 store = Store[SampleModel](SampleModel, "mydata", key_selector=lambda x: x.name)  # `key_selector` function is used to compose the key by which the object is tracked in the store)
 m = SampleModel(name="john", age=30)
-dennis = store.add(name="denis", age=32)
+dennis = store.set(SampleModel(name="denis", age=32))  # returns a tracked proxy
 store.set(m)
 dennis.name = "DENIS"  # here the name in the json will also change from "dennis" to "DENIS"
 dennis.birthday()      # will also trigger another change in the age field and it will be reflected in the json file. 
@@ -38,20 +38,26 @@ dennis.birthday()      # will also trigger another change in the age field and i
   "__key__": "denis",
   "__changes__": [
     {
-      "__key__": "denis",
+      "kind": "UPDATE",
       "prop_name": "age",
       "prev_val": 32,
       "new_val": 33,
+      "key": "denis",
       "date": "2024-08-28T19:04:12.840353"
     },
-
     {
-      "__key__": "denis",
+      "kind": "UPDATE",
       "prop_name": "name",
       "prev_val": "denis",
       "new_val": "DENIS",
+      "key": "denis",
       "date": "2024-08-28T19:04:12.840216"
     },
+    {
+      "kind": "ADD",
+      "key": "denis",
+      "date": "2024-08-28T19:04:12.840100"
+    }
   ]
 }
 ```
@@ -239,9 +245,12 @@ between on-disk formats).
 
 ## How is the data organized?
 
-The data is stored in a directory, with each item stored in a separate file. The file name is the key of the item, and the content is the JSON representation of the object.
-
-That's all there is to it.
+By default each record is a JSON file named after its key, inside the store's directory
+(the `FilePerRecordLayout`). This is configurable — see [Storage layouts](#storage-layouts)
+for single-file (`collection.json` / `collection.jsonl`) and directory-per-object schemes.
+Unstructured content is stored outside the record JSON as [blobs](#blobs-unstructured-content),
+and [references](#references-relationships-across-collections) link records across
+collections.
 
 ## Features
 
