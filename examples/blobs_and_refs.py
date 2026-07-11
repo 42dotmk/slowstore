@@ -6,7 +6,7 @@ Creates two collections under ./example_data and prints what lands on disk.
 
 import os
 import shutil
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -27,6 +27,10 @@ class Document(BaseModel):
     # a lazy, generic pointer to a Person in another collection. Typed as Person
     # (so editors autocomplete Person's fields) but stored as a Ref.
     author: Optional[Reference[Person]] = None
+    # lists work too: each attachment gets its own sidecar, each reviewer its own
+    # compact ref descriptor.
+    attachments: List[BlobRef] = []
+    reviewers: List[Reference[Person]] = []
 
 
 # A shared registry lets references resolve across collections.
@@ -41,11 +45,15 @@ docs = Store[Document](
 
 # --- create records ----------------------------------------------------------
 ada = people.set(Person(name="ada"))
+grace = people.set(Person(name="grace"))
 
 doc = docs.set(Document(title="intro"))
 # direct assignment: text/bytes become a BlobRef, a record becomes a Ref.
 doc.body = "# Intro\n\nlots of content..."
 doc.author = ada
+# lists: assign a whole list; each element is auto-wrapped and stored on its own.
+doc.attachments = [b"first attachment", "second attachment"]
+doc.reviewers = [ada, grace]
 # use the explicit forms when you need options, e.g. content-type or cache mode:
 #   doc.body = BlobRef.from_text("...", content_type="text/markdown")
 #   doc.author = Ref.to(ada, cache=CacheMode.EVERY_TIME)
@@ -68,6 +76,8 @@ reloaded = docs2.get("intro")
 print("\nLazily-read blob text after reload:", repr(reloaded.body.text))
 # transparent forwarding: reloaded.author behaves like the referenced Person
 print("Lazily-resolved reference:", reloaded.author.name)
+print("List of blobs (read lazily):", [a.bytes for a in reloaded.attachments])
+print("List of references (resolved lazily):", [r.name for r in reloaded.reviewers])
 
 print("\nJoin docs -> author across collections:")
 for document, author in registry2.join("docs", "author"):

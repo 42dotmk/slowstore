@@ -212,11 +212,13 @@ class Store(Sized, Generic[T]):
             del self.__data__[key]
 
             self.layout.delete_record(key)
-            # cascade: remove the record's blob sidecars too.
+            # cascade: remove the record's blob sidecars too (scalar or list).
             for fname in proxy.__blob_fields__:
-                blob = getattr(proxy.model, fname, None)
-                if isinstance(blob, BlobRef):
-                    self.layout.delete_blob(key, fname, blob.id or fname)
+                val = getattr(proxy.model, fname, None)
+                blobs = val if isinstance(val, list) else [val]
+                for blob in blobs:
+                    if isinstance(blob, BlobRef):
+                        self.layout.delete_blob(key, fname, blob.id or fname)
             proxy.__changes__.insert(0, change)
             proxy.is_dirty = True
             self.notify_changes(proxy, [change])
@@ -285,11 +287,24 @@ class Store(Sized, Generic[T]):
                 raise ValueError("Item does not belong to this store")
             if item.is_dirty:
                 # flush any blob bytes to their sidecars before the record JSON
-                # (which only holds the blob descriptors) is written.
+                # (which only holds the blob descriptors) is written. A list-blob
+                # field flushes each element and drops sidecars for elements that
+                # were removed since the last commit.
                 for fname in item.__blob_fields__:
-                    blob = getattr(item.model, fname, None)
-                    if isinstance(blob, BlobRef):
-                        blob._flush()
+                    val = getattr(item.model, fname, None)
+                    blobs = val if isinstance(val, list) else [val]
+                    for blob in blobs:
+                        if isinstance(blob, BlobRef):
+                            blob._flush()
+                    if fname in item.__blob_list_field_names__:
+                        current_ids = {
+                            b.id
+                            for b in blobs
+                            if isinstance(b, BlobRef) and b.id is not None
+                        }
+                        for stale in item.__blob_list_ids__.get(fname, set()) - current_ids:
+                            self.layout.delete_blob(item.__key__, fname, stale)
+                        item.__blob_list_ids__[fname] = current_ids
                 d = item.model.__dict__
                 if isinstance(item.model, BaseModel):
                     d = cast(BaseModel, item.model).model_dump(by_alias=True)

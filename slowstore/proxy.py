@@ -3,8 +3,8 @@ import sys
 import slowstore
 from typing import Any, Generic, TypeVar, cast, override
 from .change import Change, ChangeKind
-from .blob import BlobRef, field_is_blob
-from .ref import Ref, field_is_reference, _is_record
+from .blob import BlobRef, field_is_blob, field_is_blob_list
+from .ref import Ref, field_is_reference, field_is_reference_list, _is_record
 
 logger = get_logger("SLOWSTORE")
 
@@ -28,7 +28,13 @@ __special_fields__ = [
     "__blob_fields__",
     "__ref_field_names__",
     "__blob_field_names__",
+    "__ref_list_field_names__",
+    "__blob_list_field_names__",
+    "__blob_list_ids__",
     "__coerce_special__",
+    "__coerce_blob_item__",
+    "__bind_blob_list__",
+    "__assign_blob_list_ids__",
 ]
 
 
@@ -44,6 +50,11 @@ class Proxy(Generic[T]):
         self.__blob_fields__: list[str] = []
         self.__ref_field_names__: set[str] = set()
         self.__blob_field_names__: set[str] = set()
+        self.__ref_list_field_names__: set[str] = set()
+        self.__blob_list_field_names__: set[str] = set()
+        # last-persisted blob ids per list-blob field, so a shrunk/reordered list
+        # can delete the sidecars of elements that are no longer present.
+        self.__blob_list_ids__: dict[str, set[str]] = {}
         self.__bind_special_fields__()
 
     def __bind_special_fields__(self) -> None:
@@ -58,6 +69,8 @@ class Proxy(Generic[T]):
         self.__blob_fields__ = []
         self.__ref_field_names__ = set()
         self.__blob_field_names__ = set()
+        self.__ref_list_field_names__ = set()
+        self.__blob_list_field_names__ = set()
         model = self.model
 
         model_fields = getattr(type(model), "model_fields", None)
@@ -65,8 +78,12 @@ class Proxy(Generic[T]):
             for fname, field_info in model_fields.items():
                 if field_is_reference(field_info):
                     self.__ref_field_names__.add(fname)
+                    if field_is_reference_list(field_info):
+                        self.__ref_list_field_names__.add(fname)
                 elif field_is_blob(field_info):
                     self.__blob_field_names__.add(fname)
+                    if field_is_blob_list(field_info):
+                        self.__blob_list_field_names__.add(fname)
 
         if not hasattr(model, "__dict__"):
             return
@@ -76,6 +93,51 @@ class Proxy(Generic[T]):
                 self.__blob_fields__.append(name)
             elif isinstance(value, Ref):
                 value._bind(self, name)
+            elif isinstance(value, list) and name in self.__blob_list_field_names__:
+                self.__bind_blob_list__(name, value, snapshot=True)
+                self.__blob_fields__.append(name)
+            elif isinstance(value, list) and name in self.__ref_list_field_names__:
+                for item in value:
+                    if isinstance(item, Ref):
+                        item._bind(self, name)
+
+    def __assign_blob_list_ids__(self, field: str, blobs: list[Any]) -> None:
+        """Give every un-ided ``BlobRef`` in a list a stable, unique id.
+
+        Loaded blobs already carry their id in the descriptor; only freshly
+        wrapped ones (id is ``None``) need one. Ids are small integers as
+        strings, chosen to avoid colliding with ids already used in the list so
+        prepending/appending a new blob never overwrites an existing sidecar.
+        """
+        used = {
+            b.id for b in blobs if isinstance(b, BlobRef) and b.id is not None
+        }
+        counter = 0
+        for b in blobs:
+            if isinstance(b, BlobRef) and b.id is None:
+                while str(counter) in used:
+                    counter += 1
+                b.id = str(counter)
+                used.add(b.id)
+
+    def __bind_blob_list__(
+        self, field: str, blobs: list[Any], snapshot: bool = False
+    ) -> None:
+        """Assign ids to and bind every ``BlobRef`` in a list-blob field.
+
+        ``snapshot`` records the current set of ids as the last-persisted state;
+        it is set only on the initial bind (load/insert) — on reassignment the
+        snapshot is left for :meth:`Store.commit` to reconcile so removed blobs'
+        sidecars get cleaned up.
+        """
+        self.__assign_blob_list_ids__(field, blobs)
+        for b in blobs:
+            if isinstance(b, BlobRef):
+                b._bind(self, field)
+        if snapshot:
+            self.__blob_list_ids__[field] = {
+                b.id for b in blobs if isinstance(b, BlobRef) and b.id is not None
+            }
 
     def __coerce_special__(self, name: str, value: Any) -> Any:
         """Auto-wrap a plain assignment into a Ref/BlobRef for special fields.
@@ -86,14 +148,33 @@ class Proxy(Generic[T]):
         """
         if value is None:
             return value
+        if name in self.__ref_list_field_names__ and isinstance(value, list):
+            # ``doc.authors = [person, ref, ...]`` -> wrap each plain record.
+            # existing Refs pass through untouched (probing _is_record on a Ref
+            # would forward attribute access to its unresolved target).
+            return [
+                v if isinstance(v, Ref) else (Ref.to(v) if _is_record(v) else v)
+                for v in value
+            ]
+        if name in self.__blob_list_field_names__ and isinstance(value, list):
+            # ``doc.attachments = [b"...", "text", blob]`` -> wrap each element.
+            return [self.__coerce_blob_item__(v) for v in value]
         if name in self.__ref_field_names__ and not isinstance(value, Ref):
             if _is_record(value):
                 return Ref.to(value)
         elif name in self.__blob_field_names__ and not isinstance(value, BlobRef):
-            if isinstance(value, str):
-                return BlobRef.from_text(value)
-            if isinstance(value, (bytes, bytearray)):
-                return BlobRef.from_bytes(bytes(value))
+            return self.__coerce_blob_item__(value)
+        return value
+
+    def __coerce_blob_item__(self, value: Any) -> Any:
+        """Wrap a single plain ``str``/``bytes`` into a ``BlobRef`` (pass-through
+        for ``None`` and values already a ``BlobRef``)."""
+        if value is None or isinstance(value, BlobRef):
+            return value
+        if isinstance(value, str):
+            return BlobRef.from_text(value)
+        if isinstance(value, (bytes, bytearray)):
+            return BlobRef.from_bytes(bytes(value))
         return value
 
     def __getattr__(self, name: str):
@@ -148,6 +229,15 @@ class Proxy(Generic[T]):
                 self.__blob_fields__.append(name)
         elif isinstance(value, Ref):
             value._bind(self, name)
+        elif isinstance(value, list) and name in self.__blob_list_field_names__:
+            # snapshot=False: let commit reconcile old vs new ids (sidecar cleanup).
+            self.__bind_blob_list__(name, value)
+            if name not in self.__blob_fields__:
+                self.__blob_fields__.append(name)
+        elif isinstance(value, list) and name in self.__ref_list_field_names__:
+            for item in value:
+                if isinstance(item, Ref):
+                    item._bind(self, name)
 
         change = self.__add_change__(name, prev, value, notify_changes=notify_changes)
 

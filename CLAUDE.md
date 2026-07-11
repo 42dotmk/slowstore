@@ -49,11 +49,20 @@ change public behavior.
   or a record to a `Reference` field, auto-wraps it (`__coerce_special__`). Fields
   declared as blob/ref are discovered from the model's `model_fields` annotations
   in `__bind_special_fields__`.
+- **Lists of blobs/refs** are supported: declare `list[BlobRef]` or
+  `list[Reference[T]]`/`list[Ref]`. Each element is auto-wrapped, bound, and
+  persisted independently. List-field names are tracked in
+  `__blob_list_field_names__`/`__ref_list_field_names__` (subsets of the scalar
+  name sets). Mutation is by **whole-list reassignment** — in-place `.append()` on
+  the returned list is not tracked (same proxy limitation as elsewhere). List
+  blobs get stable per-element ids (`__assign_blob_list_ids__`); `Store.commit`
+  reconciles the previous vs current id set (`proxy.__blob_list_ids__`) to delete
+  the sidecars of removed elements.
 - **Blob filenames are derived, not chosen.** A blob's on-disk name comes from
-  `{key}.{field}` (+ blob `id`, which defaults to the field name), not from any
-  caller-supplied filename. `BlobRef.from_path()` reads bytes but does not adopt
-  the source filename. Naming logic lives in `StorageLayout.__blob_suffix__` /
-  `__blob_path__`.
+  `{key}.{field}` (+ blob `id`, which defaults to the field name; list blobs use a
+  per-element id like `{key}.{field}.0.bin`), not from any caller-supplied
+  filename. `BlobRef.from_path()` reads bytes but does not adopt the source
+  filename. Naming logic lives in `StorageLayout.__blob_suffix__` / `__blob_path__`.
 - **Layouts own on-disk shape.** Default is `FilePerRecordLayout` (`{key}.json`
   per record). Others: `JsonCollectionLayout`, `JsonlCollectionLayout` (single
   file), `DirPerObjectLayout` (dir per record). All support blobs and reload

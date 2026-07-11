@@ -36,7 +36,16 @@ same-named attribute on the referenced record -- reach those via ``.get()``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, Generic, TypeVar, cast, get_args
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Generic,
+    TypeVar,
+    cast,
+    get_args,
+    get_origin,
+)
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema as cs
@@ -201,6 +210,9 @@ class _ReferenceMeta:
 Reference = Annotated[T, _ReferenceMeta()]
 
 
+_LIST_ORIGINS = (list, tuple, set, frozenset)
+
+
 def _annotation_is_reference(annotation: Any) -> bool:
     if annotation is Ref:
         return True
@@ -215,13 +227,35 @@ def _annotation_is_reference(annotation: Any) -> bool:
     )
 
 
+def _annotation_is_reference_list(annotation: Any) -> bool:
+    origin = get_origin(annotation)
+    if origin in _LIST_ORIGINS:
+        return any(_annotation_is_reference(arg) for arg in get_args(annotation))
+    if origin is not None:
+        # unwrap Optional/Union around a list (e.g. ``Optional[list[Ref]]``)
+        return any(
+            arg is not type(None) and _annotation_is_reference_list(arg)
+            for arg in get_args(annotation)
+        )
+    return False
+
+
 def field_is_reference(field_info: Any) -> bool:
     """Whether a Pydantic ``FieldInfo`` declares a reference field.
 
     Recognizes ``Ref``, ``Optional[Ref]``, ``Reference[T]`` (whose marker Pydantic
-    hoists into ``metadata``) and ``Optional[Reference[T]]`` (marker nested in the
-    union arm).
+    hoists into ``metadata``), ``Optional[Reference[T]]`` (marker nested in the
+    union arm) and their list forms (``list[Ref]`` / ``list[Reference[T]]``).
     """
     if any(isinstance(m, _ReferenceMeta) for m in getattr(field_info, "metadata", ())):
         return True
     return _annotation_is_reference(getattr(field_info, "annotation", None))
+
+
+def field_is_reference_list(field_info: Any) -> bool:
+    """Whether a field declares a *list* of references (``list[Reference[T]]``).
+
+    A list-ref field is also a reference field (:func:`field_is_reference` returns
+    True), so callers check this to choose between scalar and per-element handling.
+    """
+    return _annotation_is_reference_list(getattr(field_info, "annotation", None))

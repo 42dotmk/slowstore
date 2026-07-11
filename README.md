@@ -327,6 +327,24 @@ deletes its blob sidecars.
 > the file's bytes but does not adopt its name. See
 > [Storage layouts](#storage-layouts) for how each layout names blob files.
 
+A field can also hold a **list of blobs** — declare it as `list[BlobRef]`. Each
+element is stored in its own sidecar (`{key}.{field}.{n}.bin`) and read lazily:
+
+```python
+class Gallery(BaseModel):
+    title: str
+    attachments: list[BlobRef] = []
+
+g = galleries.set(Gallery(title="trip"))
+g.attachments = [b"...", "a note", BlobRef.from_path("photo.png")]  # each element auto-wrapped
+g.attachments = g.attachments + [b"one more"]                       # grow by reassigning
+print(g.attachments[0].bytes)                                       # each read lazily
+```
+
+Assign a **new list** to mutate the field (in-place `.append()` on the returned
+list is not tracked). Removing elements this way drops their sidecar files on the
+next save, and deleting the record removes all of them.
+
 ## References (relationships across collections)
 
 A reference points at a record in another collection by `(collection, key)` and is
@@ -377,6 +395,23 @@ field as `Ref` (or `Optional[Ref]`) and call `.get()` / `.value` yourself. As wi
 > Because attribute access forwards to the target, `Ref`'s own members (`get`, `value`,
 > `collection`, `key`, `cache`) shadow same-named fields on the referenced record — reach
 > those via `.get()`.
+
+A field can hold a **list of references** too — declare it as `list[Reference[Target]]`
+(or `list[Ref]`). Each element is auto-wrapped and resolves independently:
+
+```python
+class Team(BaseModel):
+    title: str
+    members: list[Reference[Person]] = []
+
+t = teams.set(Team(title="core"))
+t.members = [ada, grace]                     # records auto-wrapped into Refs
+t.members = t.members + [Ref.to(alan)]       # grow by reassigning
+[m.name for m in t.members]                  # each resolved on demand
+```
+
+As with list blobs, assign a **new list** to mutate the field; each element persists as
+a compact `__ref__` descriptor, not an inlined copy of the target.
 
 ## Storage layouts
 

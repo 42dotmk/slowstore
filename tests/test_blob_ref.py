@@ -1,8 +1,8 @@
 import os
-from typing import Optional
+from typing import List, Optional
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from slowstore import BlobRef, CacheMode, Ref, Reference, Registry, Store
 
@@ -24,6 +24,18 @@ class Article(BaseModel):
     title: str
     # ergonomic, autocompleting reference: typed as Person, stored as a Ref
     author: Optional[Reference[Person]] = None
+
+
+class Gallery(BaseModel):
+    title: str
+    # a list of blobs: each element gets its own lazily-read sidecar
+    attachments: List[BlobRef] = Field(default_factory=list)
+
+
+class Team(BaseModel):
+    title: str
+    # a list of references: each element resolves independently
+    members: List[Reference[Person]] = Field(default_factory=list)
 
 
 @pytest.fixture()
@@ -132,6 +144,93 @@ def test_delete_cascades_to_blob(docs: Store[Doc]):
 
     docs.delete("a")
     assert not os.path.exists(sidecar_path)
+
+
+# -- list of blobs ------------------------------------------------------------
+
+
+@pytest.fixture()
+def galleries():
+    store = Store[Gallery](
+        Gallery, os.path.join(DATA_DIR, "galleries"), key_selector=lambda g: g.title
+    )
+    store.clear()
+    yield store
+
+
+def fresh_galleries() -> Store[Gallery]:
+    return Store[Gallery](
+        Gallery, os.path.join(DATA_DIR, "galleries"), key_selector=lambda g: g.title
+    ).load()
+
+
+def test_blob_list_each_gets_own_sidecar(galleries: Store[Gallery]):
+    g = galleries.set(Gallery(title="g"))
+    g.attachments = [b"one", "two", BlobRef.from_bytes(b"three")]
+
+    # three distinct sidecars, one per element
+    for i in range(3):
+        assert os.path.exists(os.path.join(galleries.directory, f"g.attachments.{i}.bin"))
+
+    # record JSON holds three descriptors, no raw content
+    with open(os.path.join(galleries.directory, "g.json")) as f:
+        contents = f.read()
+    assert contents.count("__blob__") == 3
+    assert "one" not in contents
+
+
+def test_blob_list_lazy_read_after_reload(galleries: Store[Gallery]):
+    g = galleries.set(Gallery(title="g"))
+    g.attachments = [b"alpha", b"beta"]
+
+    reloaded = fresh_galleries().get("g")
+    assert reloaded is not None
+    assert [a._data for a in reloaded.attachments] == [None, None]
+    assert [a.bytes for a in reloaded.attachments] == [b"alpha", b"beta"]
+
+
+def test_blob_list_append_via_reassign(galleries: Store[Gallery]):
+    g = galleries.set(Gallery(title="g"))
+    g.attachments = [b"first"]
+    g.attachments = g.attachments + [b"second"]
+
+    reloaded = fresh_galleries().get("g")
+    assert [a.bytes for a in reloaded.attachments] == [b"first", b"second"]
+
+
+def test_blob_list_prepend_does_not_collide(galleries: Store[Gallery]):
+    g = galleries.set(Gallery(title="g"))
+    g.attachments = [b"orig"]
+    # prepend a raw element: it must not overwrite the existing id-0 sidecar
+    g.attachments = [b"new-front"] + g.attachments
+
+    reloaded = fresh_galleries().get("g")
+    assert [a.bytes for a in reloaded.attachments] == [b"new-front", b"orig"]
+
+
+def test_blob_list_shrink_removes_orphan_sidecar(galleries: Store[Gallery]):
+    g = galleries.set(Gallery(title="g"))
+    g.attachments = [b"keep", b"drop"]
+    dropped_id = g.attachments[1].id
+    orphan = os.path.join(galleries.directory, f"g.attachments.{dropped_id}.bin")
+    assert os.path.exists(orphan)
+
+    # drop the second element by reassigning a shorter list
+    g.attachments = [g.attachments[0]]
+    assert not os.path.exists(orphan)
+    assert [a.bytes for a in fresh_galleries().get("g").attachments] == [b"keep"]
+
+
+def test_delete_cascades_to_blob_list(galleries: Store[Gallery]):
+    g = galleries.set(Gallery(title="g"))
+    g.attachments = [b"x", b"y"]
+    sidecars = [
+        os.path.join(galleries.directory, f"g.attachments.{i}.bin") for i in range(2)
+    ]
+    assert all(os.path.exists(p) for p in sidecars)
+
+    galleries.delete("g")
+    assert not any(os.path.exists(p) for p in sidecars)
 
 
 # -- references ---------------------------------------------------------------
@@ -294,3 +393,68 @@ def test_reference_every_time_reresolves(articles):
     ada.age = 37  # mutate the target record
     # EVERY_TIME re-resolves, so the fresh value is seen
     assert art.author.age == 37
+
+
+# -- list of references -------------------------------------------------------
+
+
+@pytest.fixture()
+def teams():
+    reg = Registry()
+    people = Store[Person](
+        Person, os.path.join(DATA_DIR, "people"), key_selector=lambda p: p.name, registry=reg
+    )
+    team_store = Store[Team](
+        Team, os.path.join(DATA_DIR, "teams"), key_selector=lambda t: t.title, registry=reg
+    )
+    people.clear()
+    team_store.clear()
+    yield reg, people, team_store
+
+
+def test_ref_list_resolves_each_element(teams):
+    reg, people, team_store = teams
+    ada = people.set(Person(name="ada", age=36))
+    grace = people.set(Person(name="grace", age=45))
+
+    t = team_store.set(Team(title="core"))
+    # assign records directly; each is auto-wrapped into a Ref
+    t.members = [ada, grace]
+
+    assert all(isinstance(m, Ref) for m in t.members)
+    assert [m.name for m in t.members] == ["ada", "grace"]
+    assert [m.age for m in t.members] == [36, 45]
+
+
+def test_ref_list_persists_as_descriptors_and_reloads(teams):
+    reg, people, team_store = teams
+    ada = people.set(Person(name="ada", age=36))
+    grace = people.set(Person(name="grace", age=45))
+    t = team_store.set(Team(title="core"))
+    t.members = [ada, grace]
+
+    with open(os.path.join(team_store.directory, "core.json")) as f:
+        contents = f.read()
+    assert contents.count("__ref__") == 2
+    # the referenced people are not inlined
+    assert '"age": 36' not in contents
+
+    reg2 = Registry()
+    Store[Person](Person, people.directory, key_selector=lambda p: p.name, registry=reg2).load()
+    teams2 = Store[Team](
+        Team, team_store.directory, key_selector=lambda t: t.title, registry=reg2
+    ).load()
+
+    reloaded = teams2.get("core")
+    assert [m.name for m in reloaded.members] == ["ada", "grace"]
+
+
+def test_ref_list_append_via_reassign(teams):
+    reg, people, team_store = teams
+    ada = people.set(Person(name="ada"))
+    grace = people.set(Person(name="grace"))
+    t = team_store.set(Team(title="core"))
+    t.members = [ada]
+    t.members = t.members + [Ref.to(grace)]
+
+    assert [m.name for m in t.members] == ["ada", "grace"]

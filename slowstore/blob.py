@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import io
 import os
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
@@ -192,6 +192,9 @@ class BlobRef(BaseModel):
                 self._data = None
 
 
+_LIST_ORIGINS = (list, tuple, set, frozenset)
+
+
 def _annotation_is_blob(annotation: Any) -> bool:
     if isinstance(annotation, type) and issubclass(annotation, BlobRef):
         return True
@@ -201,9 +204,31 @@ def _annotation_is_blob(annotation: Any) -> bool:
     )
 
 
+def _annotation_is_blob_list(annotation: Any) -> bool:
+    origin = get_origin(annotation)
+    if origin in _LIST_ORIGINS:
+        return any(_annotation_is_blob(arg) for arg in get_args(annotation))
+    if origin is not None:
+        # unwrap Optional/Union around a list (e.g. ``Optional[list[BlobRef]]``)
+        return any(
+            arg is not type(None) and _annotation_is_blob_list(arg)
+            for arg in get_args(annotation)
+        )
+    return False
+
+
 def field_is_blob(field_info: Any) -> bool:
     """Whether a Pydantic ``FieldInfo`` declares a ``BlobRef`` field.
 
-    Recognizes ``BlobRef`` and ``Optional[BlobRef]``.
+    Recognizes ``BlobRef``, ``Optional[BlobRef]`` and ``list[BlobRef]``.
     """
     return _annotation_is_blob(getattr(field_info, "annotation", None))
+
+
+def field_is_blob_list(field_info: Any) -> bool:
+    """Whether a field declares a *list* of blobs (``list[BlobRef]``).
+
+    A list-blob field is also a blob field (:func:`field_is_blob` returns True),
+    so callers check this to decide between scalar and per-element handling.
+    """
+    return _annotation_is_blob_list(getattr(field_info, "annotation", None))
