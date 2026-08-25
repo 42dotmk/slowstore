@@ -93,7 +93,16 @@ change public behavior.
   identically; there is no migration between formats.
 - **Keys are sanitized** into filesystem-safe names via `StorageLayout.sanitize`
   (lowercases, replaces unsafe chars with `_`).
-- **Single-threaded, no locking.** Do not add concurrency assumptions.
+- **Single-threaded within a process.** Do not add thread-safety assumptions.
+  Cross-*process* safety exists as an opt-in: `lock.py`'s reentrant `FileLock`
+  (flock; msvcrt on Windows) guards commits when `lock_writes=True`, and all
+  record/blob writes are atomic (`layout._atomic_write`: temp + `os.replace`).
+- **The serializer never writes silent nulls** (since 2.3):
+  `utils.json_default_serializer` handles datetime/date/time, Decimal (as str),
+  UUID, Enum, set, BlobRef/Ref descriptors and pydantic/dataclass values
+  (duck-typed), and raises `TypeError` for anything else. Persisted change
+  entries exclude dunder instance attrs (`__orig_class__`). The
+  dataclass/plain codecs revive Decimal/UUID/Enum in `_revive_typed`.
 - **On-disk change detection (opt-in).** The store never polls for external file
   changes, but two mechanisms guard against silently clobbering them:
   - `store.reload()` / `store.reload(key)` re-read from disk (invalidating the
@@ -115,8 +124,13 @@ change public behavior.
 `save_on_change` (True), `save_on_exit` (True), `load_on_start` (False),
 `encoding` ("utf-8"), `ensure_ascii` (False), `layout`, `codec`, `registry`,
 `name`, `get_identity`, `on_conflict` (`"overwrite"`),
-`save_changes_to_file` (True),
-`load_changes_from_file` (False). `codec` defaults to `codec_for(cls)`.
+`save_changes_to_file` (True), `load_changes_from_file` (False),
+`max_changes` (None — cap on per-record change history, trimmed at commit),
+`lock_writes` (False — wrap each commit/delete in the inter-process
+`FileLock`; `store.lock()` exposes it for wider critical sections),
+`lazy` (False — point-read mode: no directory scan on load, records read on
+first access, enumeration completes the scan; per-record layouts only).
+`codec` defaults to `codec_for(cls)`.
 `Store` is a context manager and flushes on exit when `save_on_exit`.
 
 ## Development workflow

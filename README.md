@@ -171,8 +171,43 @@ store = Store[User](
     on_conflict="overwrite",         # on-disk conflict policy: overwrite/error/reload
     save_changes_to_file=True,       # write the __changes__ log to disk (default)
     load_changes_from_file=False,    # restore the change log on load
+    max_changes=None,                # cap the per-record change history (None = unbounded)
+    lock_writes=False,               # hold the inter-process lock around each write
+    lazy=False,                      # open without scanning; records load on access
 )
 ```
+
+Three of these matter once several processes or large collections are involved:
+
+- **`max_changes=N`** keeps only the newest *N* change entries per record —
+  without it, a frequently edited record's file (and memory) grows on every
+  commit.
+- **`lock_writes=True`** wraps every commit/delete in an advisory file lock on
+  `{directory}/.slowstore.lock`, so two *processes* sharing a directory can't
+  interleave writes. For a full read-modify-write cycle, hold the lock
+  yourself:
+
+  ```python
+  with store.lock():
+      store.reload(key)     # see the other process's committed state
+      item = store.get(key)
+      item.count += 1       # auto-commits while the lock is held
+  ```
+
+- **`lazy=True`** (per-record layouts only) opens the store without scanning
+  the directory: `get`/`in`/`upsert`/`delete` read the touched record from
+  disk on demand, and the first enumeration (`len`, `keys`, `values`,
+  `filter`, …) completes the full scan. Point-read services over large
+  collections pay nothing at startup.
+
+All record and blob writes are **atomic** (temp file + `os.replace`): readers
+never see a partial file and a crash mid-write leaves the previous version
+intact.
+
+> **Changed in 2.3:** values the JSON serializer doesn't understand now raise
+> `TypeError` instead of being silently written as `null`. `Decimal` (as a
+> string), `UUID`, `Enum`, `set`, and `time` are handled out of the box, and
+> the dataclass/plain codecs revive `Decimal`/`UUID`/`Enum` on load.
 
 Toggle behaviour at runtime, too:
 
@@ -593,10 +628,11 @@ through its history, persisting the result. See the `Proxy` class for the detail
 - [x] **Non-Pydantic objects** — support for other JSON-serializable objects
 - [x] **On-disk change detection** — `reload()` and `on_conflict` guard against
   clobbering external edits (records and blobs)
-- [ ] **Partial / lazy load** — load only the records you need
+- [x] **Partial / lazy load** — `lazy=True` point-read mode
+- [x] **Atomic writes** — temp file + `os.replace`, never a partial record
+- [x] **Multi-process locking** — `lock_writes=True` / `store.lock()`
 - [ ] **Transactions**
 - [ ] **Indexes** — speed up queries
-- [ ] **Thread locking / multi-threading**
 - [ ] **Object expiration** — use as a cache / session store
 - [ ] **Custom serialization** hooks
 - [ ] **Performance tests & comparisons**
