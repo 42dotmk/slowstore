@@ -6,6 +6,7 @@ from typing import Any, Callable, Generic, Literal, Sized, TypeVar, cast
 from .blob import BlobRef
 from .codec import Codec, codec_for
 from .errors import ConflictPolicy, StaleWriteError
+from .lock import FileLock
 from .layout import FilePerRecordLayout, StorageLayout
 from .registry import Registry, default_registry
 from .proxy import (
@@ -54,6 +55,13 @@ class Store(Sized, Generic[T]):
         self.get_identity: Callable[[], Any] | None = cast(
             Callable[[], Any] | None, kwargs.get("get_identity", None)
         )
+
+        # Advisory inter-process lock on the store directory. ``lock_writes``
+        # wraps every commit/delete in it so two processes sharing the
+        # directory cannot interleave writes; ``store.lock()`` is available for
+        # wider read-modify-write sections either way.
+        self.lock_writes: bool = cast(bool, kwargs.get("lock_writes", False))
+        self.__file_lock__: FileLock = FileLock(directory)
 
         self.key_selector: Callable[["Store[T]", T], str] | None = cast(
             Callable[["Store[T]", T], str] | None, kwargs.get("key_selector", None)
@@ -220,6 +228,9 @@ class Store(Sized, Generic[T]):
 
     @ensure_loaded
     def delete(self, key: str) -> bool:
+        if self.lock_writes and not self.__file_lock__.held:
+            with self.__file_lock__:
+                return self.delete(key)
         if key in self.__data__:
             proxy = self.__data__[key]
             change = Change[T](kind=ChangeKind.DELETE, key=key, model=proxy.model,
@@ -300,8 +311,19 @@ class Store(Sized, Generic[T]):
         for proxy in self.values():
             self.commit(cast(Proxy[T], proxy))
 
+    def lock(self) -> FileLock:
+        """The store's inter-process lock, as a reentrant context manager.
+
+        Hold it around read-modify-write sections when several processes share
+        this directory (pair with ``reload``/``on_conflict`` to observe the
+        other process's writes)."""
+        return self.__file_lock__
+
     @ensure_loaded
     def commit(self, *items: Proxy[T]):
+        if self.lock_writes and not self.__file_lock__.held:
+            with self.__file_lock__:
+                return self.commit(*items)
         for item in items:
             if item.store != self:
                 raise ValueError("Item does not belong to this store")

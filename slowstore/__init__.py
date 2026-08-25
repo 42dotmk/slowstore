@@ -10,6 +10,7 @@ from .layout import (
 )
 from .blob import BlobRef, CacheMode
 from .errors import ConflictPolicy, StaleWriteError
+from .lock import FileLock
 from .ref import Ref, Reference
 from .registry import Registry, default_registry
 from .codec import (
@@ -35,6 +36,7 @@ __all__ = [
     "CacheMode",
     "ConflictPolicy",
     "StaleWriteError",
+    "FileLock",
     "Ref",
     "Reference",
     "Registry",
