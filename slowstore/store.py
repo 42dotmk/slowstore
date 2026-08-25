@@ -341,8 +341,15 @@ class Store(Sized, Generic[T]):
                     # ``model`` is the record itself — omit it so ADD entries
                     # stay compact (the file already holds the model); keep
                     # kind/key/prop/val/date/actor.
+                    # ``model`` is the record itself; dunder instance attrs
+                    # (e.g. ``__orig_class__`` from ``Change[T](...)``) are
+                    # runtime artifacts, not change data.
                     d["__changes__"] = [
-                        {k: v for k, v in x.__dict__.items() if k != "model"}
+                        {
+                            k: v
+                            for k, v in x.__dict__.items()
+                            if k != "model" and not k.startswith("__")
+                        }
                         for x in item.__changes__
                     ]
                 self.layout.write_record(item.__key__, d)

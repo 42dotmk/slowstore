@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import decimal
+import enum
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -144,6 +147,23 @@ def _revive_typed(annotation: Any, value: Any) -> Any:
             ):
                 try:
                     return datetime.date.fromisoformat(value)
+                except ValueError:
+                    return value
+            if issubclass(annotation, decimal.Decimal) and isinstance(
+                value, (str, int, float)
+            ):
+                try:
+                    return decimal.Decimal(str(value))
+                except decimal.InvalidOperation:
+                    return value
+            if issubclass(annotation, uuid.UUID) and isinstance(value, str):
+                try:
+                    return uuid.UUID(value)
+                except ValueError:
+                    return value
+            if issubclass(annotation, enum.Enum):
+                try:
+                    return annotation(value)
                 except ValueError:
                     return value
             if dataclasses.is_dataclass(annotation) and isinstance(value, dict):

@@ -1,3 +1,4 @@
+import json
 import os
 from typing import List, Optional
 
@@ -188,9 +189,9 @@ def test_blob_list_each_gets_own_sidecar(galleries: Store[Gallery]):
 
     # record JSON holds three descriptors, no raw content
     with open(os.path.join(galleries.directory, "g.json")) as f:
-        contents = f.read()
-    assert contents.count("__blob__") == 3
-    assert "one" not in contents
+        record = json.load(f)
+    assert [b["__blob__"] for b in record["attachments"]] == [True] * 3
+    assert "one" not in json.dumps(record["attachments"])
 
 
 def test_blob_list_lazy_read_after_reload(galleries: Store[Gallery]):
@@ -448,10 +449,15 @@ def test_ref_list_persists_as_descriptors_and_reloads(teams):
     t.members = [ada, grace]
 
     with open(os.path.join(team_store.directory, "core.json")) as f:
-        contents = f.read()
-    assert contents.count("__ref__") == 2
+        record = json.load(f)
+    assert [r["__ref__"] for r in record["members"]] == [True, True]
     # the referenced people are not inlined
-    assert '"age": 36' not in contents
+    assert '"age": 36' not in json.dumps(record["members"])
+    # the change entry records the assignment as descriptors, not null
+    member_change = next(
+        c for c in record["__changes__"] if c.get("prop_name") == "members"
+    )
+    assert [r["__ref__"] for r in member_change["new_val"]] == [True, True]
 
     reg2 = Registry()
     Store[Person](Person, people.directory, key_selector=lambda p: p.name, registry=reg2).load()
