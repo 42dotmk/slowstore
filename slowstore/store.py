@@ -71,6 +71,14 @@ class Store(Sized, Generic[T]):
             "int | None", kwargs.get("max_changes", None)
         )
 
+        # Lazy point-read mode: ``load()`` opens the store without scanning the
+        # directory; a record is read from disk on first access by key, and any
+        # enumeration (len/keys/values/filter/...) triggers the full scan. Only
+        # meaningful for per-record layouts (collection files are one read
+        # anyway) — opening a large store to touch one record costs nothing.
+        self.lazy: bool = cast(bool, kwargs.get("lazy", False))
+        self.fully_loaded: bool = False
+
         self.key_selector: Callable[["Store[T]", T], str] | None = cast(
             Callable[["Store[T]", T], str] | None, kwargs.get("key_selector", None)
         )
@@ -110,6 +118,7 @@ class Store(Sized, Generic[T]):
     @ensure_loaded
     def get(self, key: str) -> T | None:
         """gets an object from the store wrapped in a proxy but still casted as the model"""
+        _ = self.__probe__(key)
         return cast(T, self.__data__.get(key))
 
     @ensure_loaded
@@ -117,6 +126,7 @@ class Store(Sized, Generic[T]):
         """gets an object from the store but only the raw model"""
         if isinstance(key, Proxy):
             key = key.__key__
+        _ = self.__probe__(key)
         res = self.__data__.get(key)
         if res:
             return res.model
@@ -125,6 +135,7 @@ class Store(Sized, Generic[T]):
     @ensure_loaded
     def get_proxy(self, key: str) -> T | None:
         """gets an object from the store as a proxy"""
+        _ = self.__probe__(key)
         return self.__data__.get(key)
 
     @ensure_loaded
@@ -137,7 +148,7 @@ class Store(Sized, Generic[T]):
     def insert(
         self, key: str, value: T, skip_autosave: bool = False, skip_notify: bool = False
     ):
-        if key in self.__data__:
+        if self.__probe__(key):
             raise ValueError(f"Key {key} already exists in the store")
         proxy = Proxy[T](self, key, value)
         proxy.is_dirty = True
@@ -160,7 +171,7 @@ class Store(Sized, Generic[T]):
     def update(
         self, key: str, value: T, skip_autosave: bool = False, skip_notify: bool = False
     ):
-        if key not in self.__data__:
+        if not self.__probe__(key):
             raise ValueError(f"Key {key} does not exist in the store")
 
         proxy = self.__data__[key]
@@ -194,7 +205,7 @@ class Store(Sized, Generic[T]):
         self, key: str, value: T, skip_autosave: bool = False, skip_notify: bool = False
     ) -> T:
         """sets a new object in the store and returns it's proxy"""
-        if key in self.__data__:
+        if self.__probe__(key):
             return self.update(
                 key, value, skip_autosave=skip_autosave, skip_notify=skip_notify
             )
@@ -239,7 +250,7 @@ class Store(Sized, Generic[T]):
         if self.lock_writes and not self.__file_lock__.held:
             with self.__file_lock__:
                 return self.delete(key)
-        if key in self.__data__:
+        if self.__probe__(key):
             proxy = self.__data__[key]
             change = Change[T](kind=ChangeKind.DELETE, key=key, model=proxy.model,
                                actor=self.__identity__())
@@ -302,16 +313,19 @@ class Store(Sized, Generic[T]):
 
     @ensure_loaded
     def values(self):
+        self.__ensure_all__()
         for x in self.__data__:
             yield cast(T, self.get(x))
 
     @ensure_loaded
     def raw_values(self):
+        self.__ensure_all__()
         for x in self.__data__:
             yield self.__data__[x].model
 
     @ensure_loaded
     def keys(self):
+        self.__ensure_all__()
         return self.__data__.keys()
 
     @ensure_loaded
@@ -417,14 +431,14 @@ class Store(Sized, Generic[T]):
 
     @ensure_loaded
     def __len__(self):
+        self.__ensure_all__()
         return len(self.__data__)
 
     @ensure_loaded
     def __contains__(self, key: str | Proxy[T]) -> bool:
         if isinstance(key, Proxy):
-            return key.__key__ in self.__data__
-
-        return key in self.__data__
+            key = key.__key__
+        return self.__probe__(key)
 
     @ensure_loaded
     def __iter__(self):
@@ -443,7 +457,41 @@ class Store(Sized, Generic[T]):
         return self.delete(key)
 
     def load(self):
+        if self.lazy and self.layout.per_record_files:
+            # point-read mode: open without scanning the directory. Records
+            # load on first access (__probe__); enumeration falls back to the
+            # full scan via __ensure_all__.
+            os.makedirs(self.directory, exist_ok=True)
+            self.__data__: dict[str, Any] = {}
+            self.__changes__: list[Change[T]] = []
+            self.__stamps__ = {}
+            self.load_errors = []
+            self.fully_loaded = False
+            self.loaded = True
+            return self
         return self.__json_load__()
+
+    def __probe__(self, key: str) -> bool:
+        """Whether ``key`` exists, reading it from disk on demand in lazy mode."""
+        if key in self.__data__:
+            return True
+        if self.fully_loaded:
+            return False
+        return self.__reload_key__(key) is not None
+
+    def __ensure_all__(self) -> None:
+        """Complete a lazy store to a full scan, keeping already-loaded proxies
+        (and their conflict-detection baselines) so external references and
+        uncommitted edits survive."""
+        if self.fully_loaded:
+            return
+        keep = dict(self.__data__)
+        stamps = dict(self.__stamps__)
+        _ = self.__json_load__()
+        for k, proxy in keep.items():
+            self.__data__[k] = proxy
+            if k in stamps:
+                self.__stamps__[k] = stamps[k]
 
     @ensure_loaded
     def reload(self, key: str | None = None, *, keep_dirty: bool = False):
@@ -540,6 +588,7 @@ class Store(Sized, Generic[T]):
                 f"loading {self.__class__.__name__} generated {len(errors)} errors, they are stored in load_errors list"
             )
         self.loaded = True
+        self.fully_loaded = True
         return self
 
     def clear(self):
@@ -548,6 +597,7 @@ class Store(Sized, Generic[T]):
         self.__data__ = {}
         self.__changes__ = []
         self.loaded = False
+        self.fully_loaded = False
 
     def key_for(
         self,
