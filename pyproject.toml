@@ -16,14 +16,13 @@ python = ">=3.10"
 # Optional: only needed to use Pydantic models (the default `PydanticCodec`).
 # `pip install slowstore[pydantic]`. Dataclass/plain models need nothing extra.
 pydantic = { version = "^2.8.2", optional = true }
-pytest = "^8.3.4"
 
 [tool.poetry.extras]
 pydantic = ["pydantic"]
 
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.3.2"
+pytest = "^8.3"
 debugpy = "^1.8.5"
 ipython = "^8.27.0"
 # installed for the test suite, which exercises the Pydantic backend
