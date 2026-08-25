@@ -63,6 +63,14 @@ class Store(Sized, Generic[T]):
         self.lock_writes: bool = cast(bool, kwargs.get("lock_writes", False))
         self.__file_lock__: FileLock = FileLock(directory)
 
+        # Cap on the per-record change history kept in memory and persisted in
+        # the record file (newest first; None = unbounded, the historical
+        # behavior). Without a cap a hot record's file grows on every commit.
+        # The oldest entries (eventually including the ADD) fall off the end.
+        self.max_changes: int | None = cast(
+            "int | None", kwargs.get("max_changes", None)
+        )
+
         self.key_selector: Callable[["Store[T]", T], str] | None = cast(
             Callable[["Store[T]", T], str] | None, kwargs.get("key_selector", None)
         )
@@ -357,6 +365,11 @@ class Store(Sized, Generic[T]):
                         for stale in item.__blob_list_ids__.get(fname, set()) - current_ids:
                             self.layout.delete_blob(item.__key__, fname, stale)
                         item.__blob_list_ids__[fname] = current_ids
+                if (
+                    self.max_changes is not None
+                    and len(item.__changes__) > self.max_changes
+                ):
+                    del item.__changes__[self.max_changes :]
                 d = self.codec.to_dict(item.model)
                 d["__key__"] = item.__key__
                 if self.save_changes_to_file:

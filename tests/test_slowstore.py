@@ -137,3 +137,19 @@ def test_notifications_on_delete(store: Store[SampleModel]):
     store.delete("test://1")
     assert hook_called
 
+
+
+def test_max_changes_caps_persisted_history(tmp_path):
+    d = str(tmp_path / "capped")
+    store = Store(SampleModel, d, max_changes=5, load_changes_from_file=True)
+    s = store.upsert("a", SampleModel(name="a", age=0))
+    for i in range(20):
+        s.age = i + 1
+    proxy = store.as_proxy(s)
+    assert len(proxy.__changes__) == 5
+    assert proxy.__changes__[0].new_val == 20  # newest kept
+
+    again = Store(SampleModel, d, load_changes_from_file=True)
+    reloaded = again.get_proxy("a")
+    assert reloaded is not None
+    assert len(again.as_proxy(reloaded).__changes__) == 5
