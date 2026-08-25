@@ -21,6 +21,7 @@ read-modify-write of their single file).
 import json
 import os
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +40,35 @@ def _stat_stamp(path: str) -> "tuple[int, int] | None":
     except OSError:
         return None
     return (st.st_mtime_ns, st.st_size)
+
+
+def _atomic_write(path: str, payload: "str | bytes", encoding: str | None = None) -> None:
+    """Write ``payload`` to ``path`` via a temp file + ``os.replace``.
+
+    Readers never observe a partially written file, and a crash mid-write
+    leaves the previous version intact instead of a truncated one. The ``.tmp``
+    suffix keeps a leftover temp file invisible to ``load_records`` filters.
+    (No fsync: crash-atomicity for the file's content, not power-loss
+    durability — in keeping with what a JSON-on-disk store can promise.)
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(
+        dir=directory, prefix=f".{os.path.basename(path)}-", suffix=".tmp"
+    )
+    try:
+        if isinstance(payload, str):
+            with os.fdopen(fd, "w", encoding=encoding) as f:
+                _ = f.write(payload)
+        else:
+            with os.fdopen(fd, "wb") as f:
+                _ = f.write(payload)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class StorageLayout(ABC):
@@ -173,8 +203,7 @@ class _SidecarBlobs(StorageLayout):
             return f.read()
 
     def write_blob(self, key: str, field: str, blob_id: str, data: bytes) -> None:
-        with open(self.__blob_path__(key, field, blob_id), "wb") as f:
-            _ = f.write(data)
+        _atomic_write(self.__blob_path__(key, field, blob_id), data)
 
     def delete_blob(self, key: str, field: str, blob_id: str) -> None:
         path = self.__blob_path__(key, field, blob_id)
@@ -213,8 +242,7 @@ class FilePerRecordLayout(_SidecarBlobs):
         return records, errors
 
     def write_record(self, key: str, data: dict[str, Any]) -> None:
-        with open(self.__record_path__(key), "w", encoding=self.encoding) as f:
-            _ = f.write(self.__dumps__(data))
+        _atomic_write(self.__record_path__(key), self.__dumps__(data), self.encoding)
 
     def delete_record(self, key: str) -> None:
         path = self.__record_path__(key)
@@ -322,8 +350,7 @@ class JsonCollectionLayout(_CollectionFileLayout):
 
     def __write_file__(self, records: dict[str, dict[str, Any]]) -> None:
         obj = {key: data for key, data in records.items()}
-        with open(self.__path__, "w", encoding=self.encoding) as f:
-            _ = f.write(self.__dumps__(obj))
+        _atomic_write(self.__path__, self.__dumps__(obj), self.encoding)
 
 
 class JsonlCollectionLayout(_CollectionFileLayout):
@@ -353,10 +380,8 @@ class JsonlCollectionLayout(_CollectionFileLayout):
 
     def __write_file__(self, records: dict[str, dict[str, Any]]) -> None:
         lines = [self.__dumps__(data, indent=None) for data in records.values()]
-        with open(self.__path__, "w", encoding=self.encoding) as f:
-            _ = f.write("\n".join(lines))
-            if lines:
-                _ = f.write("\n")
+        text = "\n".join(lines) + ("\n" if lines else "")
+        _atomic_write(self.__path__, text, self.encoding)
 
 
 class DirPerObjectLayout(StorageLayout):
@@ -400,8 +425,7 @@ class DirPerObjectLayout(StorageLayout):
 
     def write_record(self, key: str, data: dict[str, Any]) -> None:
         os.makedirs(self.__object_dir__(key), exist_ok=True)
-        with open(self.__record_path__(key), "w", encoding=self.encoding) as f:
-            _ = f.write(self.__dumps__(data))
+        _atomic_write(self.__record_path__(key), self.__dumps__(data), self.encoding)
 
     def delete_record(self, key: str) -> None:
         # removing the object directory takes the record's blobs with it.
@@ -427,8 +451,7 @@ class DirPerObjectLayout(StorageLayout):
 
     def write_blob(self, key: str, field: str, blob_id: str, data: bytes) -> None:
         os.makedirs(self.__object_dir__(key), exist_ok=True)
-        with open(self.__blob_path__(key, field, blob_id), "wb") as f:
-            _ = f.write(data)
+        _atomic_write(self.__blob_path__(key, field, blob_id), data)
 
     def delete_blob(self, key: str, field: str, blob_id: str) -> None:
         path = self.__blob_path__(key, field, blob_id)
