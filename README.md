@@ -70,6 +70,11 @@ user.age += 1                               # change is persisted on assignment
 - **Blobs & relationships.** Keep large/binary content out of the JSON, and link
   records across collections with lazily-resolved references.
 
+Prototyping with a coding agent (Claude Code and friends)? See
+[Why slowstore for LLM prototyping](docs/why-slowstore-for-llm-prototyping.md) —
+the case for a file store as the agent-legible substrate, with measurements
+from real builds.
+
 ## Installation
 
 ```bash

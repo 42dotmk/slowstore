@@ -149,6 +149,21 @@ poetry build              # build  (make build)
   build → test → version bump → tag → push → publish.
 - Release tags are the bare semver (e.g. `2.1.0`), created with `git tag -a`.
 
+## Sharp edges for consumers (earned in production use)
+
+- **Change detection is identity-based — never mutate-in-place-then-`set()`.**
+  `get_model()` returns the store's live instance; `set()` compares the incoming
+  object against that same instance, so an in-place edit looks like "no change"
+  and is **silently never persisted** (nor change-logged) — it shows in the app
+  until restart, then reverts. Write via `model.model_copy(update={...})` (or
+  mutate through the proxy, whose attribute sets are tracked), never by editing
+  the fetched model directly.
+- **Proxies log every attribute access — use raw models on hot read paths.**
+  Iterating proxies (`store.values()`) fires the change-tracking hook per
+  attribute read; read-heavy endpoints should iterate `store.raw_values()` /
+  `get_model()` instead (measured ~10× on real endpoints). Proxies are for
+  *writing*; raw models are for *reading in bulk*.
+
 ## Conventions & gotchas
 
 - Match the existing style: internal/dunder names (`__reset__`, `__changes__`,
