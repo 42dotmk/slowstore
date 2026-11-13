@@ -153,3 +153,68 @@ def test_max_changes_caps_persisted_history(tmp_path):
     reloaded = again.get_proxy("a")
     assert reloaded is not None
     assert len(again.as_proxy(reloaded).__changes__) == 5
+
+
+class MethodModel(BaseModel):
+    name: str
+    age: int = 0
+
+    def rename(self, name: str):
+        self.name = name
+
+    @classmethod
+    def kind(cls) -> str:
+        return cls.__name__
+
+    @staticmethod
+    def shout(text: str) -> str:
+        return text.upper()
+
+
+@pytest.fixture()
+def method_store():
+    store = Store[MethodModel](MethodModel, os.path.join(DATA_DIR, "test_methods"))
+    store.clear()
+    yield store
+    store.clear()
+
+
+def test_proxy_pydantic_methods_run_on_the_model(method_store: Store[MethodModel]):
+    proxy = method_store.upsert("a", MethodModel(name="a", age=3))
+
+    assert proxy.model_dump() == {"name": "a", "age": 3}
+    assert '"name":"a"' in proxy.model_dump_json()
+
+    copy = proxy.model_copy(update={"age": 4})
+    assert type(copy) is MethodModel
+    assert copy.age == 4
+    # the copy is detached: the stored record is untouched
+    assert proxy.age == 3
+
+
+def test_proxy_instance_method_writes_are_tracked(method_store: Store[MethodModel]):
+    proxy = method_store.upsert("a", MethodModel(name="a"))
+    proxy.rename("b")
+
+    changes = cast(Proxy[MethodModel], proxy).__changes__
+    assert changes[0].prop_name == "name"
+    assert changes[0].new_val == "b"
+    assert method_store.load().get("a").name == "b"
+
+
+def test_proxy_class_and_static_methods(method_store: Store[MethodModel]):
+    proxy = method_store.upsert("a", MethodModel(name="a"))
+    assert proxy.kind() == "MethodModel"
+    assert proxy.shout("hi") == "HI"
+
+
+def test_proxy_attribute_reads_do_not_log(method_store: Store[MethodModel], caplog):
+    import logging
+
+    proxy = method_store.upsert("a", MethodModel(name="a"))
+    with caplog.at_level(logging.DEBUG, logger="SLOWSTORE"):
+        caplog.clear()
+        _ = proxy.name
+        _ = proxy.age
+        _ = [p.name for p in method_store.values()]
+    assert caplog.records == []

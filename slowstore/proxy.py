@@ -1,7 +1,7 @@
 from logging import getLogger as get_logger
 import sys
 import slowstore
-from typing import Any, Generic, TypeVar, cast, override
+from typing import Any, Generic, TypeVar, override
 from .change import Change, ChangeKind
 from .blob import BlobRef
 from .ref import Ref, _is_record
@@ -10,7 +10,7 @@ logger = get_logger("SLOWSTORE")
 
 T = TypeVar("T")
 
-__special_fields__ = [
+__special_fields__ = frozenset([
     "store",
     "model",
     "is_dirty",
@@ -35,7 +35,10 @@ __special_fields__ = [
     "__coerce_blob_item__",
     "__bind_blob_list__",
     "__assign_blob_list_ids__",
-]
+])
+
+# Model systems whose own methods must run on the real model, not the proxy.
+_MODEL_SYSTEM_MODULES = ("pydantic.", "pydantic_core.")
 
 
 class Proxy(Generic[T]):
@@ -170,29 +173,35 @@ class Proxy(Generic[T]):
         return value
 
     def __getattr__(self, name: str):
+        # Hot path: every model attribute read through a proxy lands here, so it
+        # does no logging and no string formatting.
         if name in __special_fields__:
-            logger.debug(f"Getting proxy.{name}")
             return super().__getattribute__(name)
-        else:
-            logger.debug(f"Getting model.{name}")
-            attr = getattr(self.model, name)
-            if not callable(attr):
-                return attr
-            else:
-                # when we have instance methods we need to send the proxy as 'self' so we can track changes
-                func_name = attr.__name__
-                func = cast(Any, attr).__func__
+        model = self.model
+        attr = getattr(model, name)
+        if not callable(attr):
+            return attr
+        func = getattr(attr, "__func__", None)
+        if func is None or getattr(attr, "__self__", None) is not model:
+            # callable field value, staticmethod or classmethod
+            return attr
+        if (getattr(func, "__module__", None) or "").startswith(_MODEL_SYSTEM_MODULES):
+            # methods of the model system itself (pydantic's ``model_dump``,
+            # ``model_copy``…) reach into the instance's internals, which the
+            # proxy does not have: run them on the real model.
+            return attr
 
-                def wrapper(*args: list[Any], **kwargs: dict[str, Any]) -> Any:
-                    return func(self, *args, **kwargs)
+        # the model's own instance methods get the proxy as 'self' so the
+        # attribute writes they make are tracked as changes
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            return func(self, *args, **kwargs)
 
-                wrapper.__name__ = func_name
-                return wrapper
+        wrapper.__name__ = getattr(func, "__name__", name)
+        return wrapper
 
     @override
     def __setattr__(self, name: str, value: Any) -> None:
         if name in __special_fields__:
-            logger.debug(f"Setting proxy: {name}={value}")
             super().__setattr__(name, value)
         else:
             _ = self.__update_model_prop__(name, value, False, True)
@@ -204,7 +213,7 @@ class Proxy(Generic[T]):
         skip_auto_save: bool = False,
         notify_changes: bool = True,
     ):
-        logger.debug(f"Setting model: {name}={value}")
+        logger.debug("Setting model: %s=%s", name, value)
         # auto-wrap plain records/bytes/text assigned to reference/blob fields.
         value = self.__coerce_special__(name, value)
         prev = self.model.__getattribute__(name)
@@ -244,7 +253,7 @@ class Proxy(Generic[T]):
     def __add_change__(
         self, prop_name: str, prev_val: Any, new_val: Any, notify_changes: bool = True
     ) -> Change[T]:
-        logger.debug(f"Adding change: {prop_name}={prev_val} -> {new_val}")
+        logger.debug("Adding change: %s=%s -> %s", prop_name, prev_val, new_val)
         change = Change[T](
             kind=ChangeKind.UPDATE,
             key=self.__key__,

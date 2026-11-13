@@ -158,11 +158,17 @@ poetry build              # build  (make build)
   until restart, then reverts. Write via `model.model_copy(update={...})` (or
   mutate through the proxy, whose attribute sets are tracked), never by editing
   the fetched model directly.
-- **Proxies log every attribute access — use raw models on hot read paths.**
-  Iterating proxies (`store.values()`) fires the change-tracking hook per
-  attribute read; read-heavy endpoints should iterate `store.raw_values()` /
-  `get_model()` instead (measured ~10× on real endpoints). Proxies are for
-  *writing*; raw models are for *reading in bulk*.
+- **Proxy reads are cheaper than they were, but still not free — use raw models
+  on hot read paths.** Attribute reads through a proxy no longer log or format
+  anything (the per-access `logger.debug` f-strings were ~2/3 of the cost), but
+  each one still goes through the `__getattr__` fallback: a full scan over
+  `store.values()` measures ~5× slower than `store.raw_values()` /
+  `get_model()`. Proxies are for *writing*; raw models are for *reading in bulk*.
+- **Proxies are not model instances.** `isinstance(proxy, Model)` is False, so
+  serializers that dispatch on type (FastAPI's `jsonable_encoder`, a route with
+  no `response_model`) fail on a proxy — return `proxy.model` / `get_model()`.
+  Pydantic's own methods (`model_dump`, `model_copy`, …) do work on a proxy:
+  they run on the real model (`_MODEL_SYSTEM_MODULES` in `proxy.py`).
 
 ## Conventions & gotchas
 

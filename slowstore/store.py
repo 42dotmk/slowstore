@@ -314,8 +314,10 @@ class Store(Sized, Generic[T]):
     @ensure_loaded
     def values(self):
         self.__ensure_all__()
-        for x in self.__data__:
-            yield cast(T, self.get(x))
+        # everything is loaded: yield the proxies directly rather than paying a
+        # get() (load check + probe) per record
+        for proxy in self.__data__.values():
+            yield cast(T, proxy)
 
     @ensure_loaded
     def raw_values(self):
@@ -648,7 +650,7 @@ class Store(Sized, Generic[T]):
         self.change_hooks = []
 
     def notify_changes(self, proxy: Proxy[T], changes: list[Change[T]] | None):
-        logger.debug(f"Notifying change to {len(self.change_hooks)} hooks")
+        logger.debug("Notifying change to %d hooks", len(self.change_hooks))
         if len(self.change_hooks) == 0 or changes is None or len(changes) == 0:
             return
 
